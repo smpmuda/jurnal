@@ -4,11 +4,10 @@
 // ============================================================
 
 const CONFIG = {
-  API_URL: "script.google.com/macros/s/AKfycbyZ-nPXp3myV5pDfnTjVAgceV5kUEsPAWNYQumaax863uauXouZvCXsfZKoYYFtLTwW/exec",
+  API_URL: "https://script.google.com/macros/s/AKfycbyZ-nPXp3myV5pDfnTjVAgceV5kUEsPAWNYQumaax863uauXouZvCXsfZKoYYFtLTwW/exec",
   APP_NAME: "Jurnal Mengajar",
   VERSION: "1.0.0"
 };
-
 
 // [BARU — fix kritis 2026-09-12] GitHub Pages project-pages (mis.
 // smpmuda.github.io/lab dan smpmuda.github.io/jurnal) berbagi ORIGIN YANG
