@@ -191,11 +191,22 @@ Ini memangkas volume tulis ke Spreadsheet secara signifikan untuk kelas yang may
 
 ## Performa & Caching
 
-- **Cache 2 lapis**: in-memory per eksekusi + `CacheService` lintas eksekusi. Sheet master data (`CONFIG`, `TAHUN_AJARAN`, `GURU`, `KELAS`, `SISWA`, `MAPEL`, `JAM`) di-cache 300 detik, `USER` 60 detik, `JADWAL` 180 detik.
+- **Cache 2 lapis (server, Apps Script)**: in-memory per eksekusi + `CacheService` lintas eksekusi. Sheet master data (`CONFIG`, `TAHUN_AJARAN`, `GURU`, `KELAS`, `SISWA`, `MAPEL`, `JAM`) di-cache 300 detik, `USER` 60 detik, `JADWAL` 180 detik.
 - Sheet transaksional (`JURNAL`, `JURNAL_JAM`, `KEHADIRAN`, `LOG`) **sengaja tidak di-cache** karena berubah terus.
 - Setiap operasi tulis memanggil `invalidateCache(sheetName)` agar tidak ada data basi.
 - Batch write (`appendManyToSheet`, `setValues`) dipakai untuk semua insert multi-baris, menggantikan `appendRow()` berulang.
 - Lookup relasi (guru↔kelas↔mapel dsb.) memakai `indexBy()`/`groupBy()` (Map sekali-bangun), bukan `.find()`/`.filter()` berulang di dalam loop (menghindari pola N+1).
+
+### Cache Client-Side (localStorage, di perangkat pengguna)
+
+**Ini lapis cache TERPISAH dari cache server di atas** — disepakati 2026-09-08 setelah diskusi keamanan (lihat MASTER_CONTEXT_HANDOFF.md).
+
+- Data master (`getGuru`, `getKelas`, `getMapel`, `getJam`, `getSiswa` per kelas, `getJadwalPerGuru`) di-cache di `localStorage` browser masing-masing pengguna oleh `frontend/js/cache.js` — **BUKAN** disimpan sebagai file JSON di repo GitHub (repo ini publik; menyimpan data siswa/guru sebagai file publik akan jauh LEBIH TIDAK aman dibanding kondisi sekarang).
+- Data transaksional (`getJadwalHariIni`, `getJadwalKelas`, `getJadwalKelasPublik`, jurnal, kehadiran, log) **TIDAK PERNAH** di-cache client-side — selalu live, karena mengandung status yang berubah tiap hari (`sudah_diisi`, konflik, dsb.).
+- **Invalidasi otomatis**: `01_CONFIG` punya baris `DATA_VERSION` (dibuat otomatis pertama kali dipakai). Trigger sederhana `onEdit(e)` di `Code.gs` menaikkan angka ini setiap kali sheet `04_GURU`/`05_KELAS`/`06_SISWA`/`07_MAPEL`/`09_JADWAL` diedit langsung di Spreadsheet — **trigger ini aktif otomatis, admin TIDAK PERLU setup apapun** (simple trigger bawaan Google Sheets).
+- `getConfig` mengembalikan `data_version`. Frontend bandingkan dengan versi tersimpan di perangkat; kalau beda, seluruh cache lokal dihapus dan diisi ulang secara lazy (baru fetch lagi saat benar-benar dibutuhkan, bukan preload semua sekaligus).
+- Tombol 🔄 di header app (semua role) memaksa sinkronisasi kapan saja — berguna sesaat setelah admin melakukan banyak perubahan sekaligus, sebelum trigger sempat jalan, atau untuk troubleshooting.
+- **Gagal-aman**: semua akses `localStorage` dibungkus try-catch. Kalau nonaktif (mode privat browser) atau penuh, cache dianggap selalu kosong — aplikasi tetap berjalan normal, hanya tanpa manfaat cache (kembali ke perilaku fetch-langsung seperti sebelumnya).
 
 ---
 

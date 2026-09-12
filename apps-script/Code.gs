@@ -15,6 +15,31 @@ function doGet(e) {
   return handleRequest(e, 'GET');
 }
 
+// ── Trigger sederhana bawaan Google Sheets (OTOMATIS aktif begitu file ini
+// ter-deploy — admin TIDAK PERLU setup trigger manual apapun) ───────────
+//
+// [BARU — arsitektur cache client-side, 2026-09-08] Naikkan DATA_VERSION
+// setiap kali sheet MASTER DATA (bukan transaksional) diedit langsung di
+// Spreadsheet, supaya cache di localStorage semua pengguna tahu kapan
+// harus refresh. Sheet transaksional (10_JURNAL, 11_JURNAL_JAM,
+// 12_KEHADIRAN, 13_LOG) SENGAJA TIDAK memicu ini — data itu memang selalu
+// live di frontend, tidak pernah di-cache client-side.
+//
+// PENTING: hanya BOLEH ada SATU fungsi bernama `onEdit` di seluruh proyek
+// (Apps Script menggabungkan semua file .gs jadi satu konteks global) —
+// jangan tambahkan onEdit lain di file manapun.
+function onEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    var sheetName = e.range.getSheet().getName();
+    var sheetMasterData = ['04_GURU', '05_KELAS', '06_SISWA', '07_MAPEL', '09_JADWAL'];
+    if (sheetMasterData.indexOf(sheetName) === -1) return;
+    bumpDataVersion();
+  } catch (err) {
+    // Simple trigger TIDAK BOLEH melempar error yang terlihat admin.
+  }
+}
+
 // ── Entry point POST ──────────────────────────────────────────
 
 function doPost(e) {

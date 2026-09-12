@@ -29,6 +29,11 @@ function actionGetConfig() {
       .split(',').map(function(n) { return parseInt(n); }),
     batas_edit_hari: parseInt(cfg.BATAS_EDIT_HARI || 7),
     izin_edit:       cfg.IZIN_EDIT_JURNAL === 'TRUE' || cfg.IZIN_EDIT_JURNAL === true,
+    // [BARU — arsitektur cache client-side, 2026-09-08] Naik otomatis lewat
+    // trigger onEdit(e) tiap kali sheet master data (guru/kelas/siswa/mapel/
+    // jadwal) diedit manual di Spreadsheet. Dipakai frontend (js/cache.js)
+    // untuk tahu kapan cache di localStorage device harus dibersihkan.
+    data_version: parseInt(cfg.DATA_VERSION || 0, 10),
   });
 }
 

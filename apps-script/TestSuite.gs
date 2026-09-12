@@ -43,6 +43,7 @@ function runFullTest() {
   testStrukturSheet();
   testEndpointPublik();
   testConfig();
+  testDataVersionCache();
   var loginResults = testLoginSemuaRole();
   testGetMasterData(loginResults.guru);
   testJadwalDanKonflik(loginResults.guru);
@@ -236,6 +237,35 @@ function testConfig() {
   var res = actionGetConfig();
   var data = JSON.parse(res.getContent()).data;
   _t('actionGetConfig() mengembalikan data', !!data.nama_sekolah);
+  _t('actionGetConfig() punya field data_version (angka)', typeof data.data_version === 'number', 'nilai: ' + data.data_version);
+}
+
+// ── 2.5 Data Version (arsitektur cache client-side) ────────────
+
+/**
+ * Validasi mekanisme versi data untuk cache di localStorage frontend
+ * (js/cache.js). Test ini memanggil bumpDataVersion() LANGSUNG (bukan
+ * lewat trigger onEdit — trigger simple tidak bisa disimulasikan dari
+ * sini) untuk memastikan fungsi bump-nya sendiri benar. Perilaku
+ * trigger-nya (naik otomatis saat admin edit sheet 04_GURU dst di
+ * Spreadsheet) HARUS dicek manual — lihat Panduan_Deploy_dan_Uji.md.
+ */
+function testDataVersionCache() {
+  _section('2.5 DATA VERSION (cache client-side)');
+
+  _configCache = null;
+  var before = parseInt(configVal('DATA_VERSION', 0), 10) || 0;
+
+  bumpDataVersion();
+
+  _configCache = null;
+  var after = parseInt(configVal('DATA_VERSION', 0), 10) || 0;
+
+  _t('DATA_VERSION naik 1 setelah bumpDataVersion()', after === before + 1, 'sebelum: ' + before + ', sesudah: ' + after);
+
+  var res = actionGetConfig();
+  var data = JSON.parse(res.getContent()).data;
+  _t('getConfig() ikut mengembalikan versi terbaru', data.data_version === after, 'dari getConfig: ' + data.data_version);
 }
 
 // ── 3. Login Semua Role ──────────────────────────────────────

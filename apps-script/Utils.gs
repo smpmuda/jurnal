@@ -261,6 +261,61 @@ function configVal(key, fallback) {
   return cfg[key] !== undefined ? cfg[key] : (fallback !== undefined ? fallback : null);
 }
 
+/**
+ * [BARU — arsitektur cache client-side, 2026-09-08]
+ * Naikkan angka DATA_VERSION di sheet 01_CONFIG. Dipanggil otomatis oleh
+ * trigger sederhana onEdit(e) di Code.gs setiap kali admin mengedit sheet
+ * master data (guru/kelas/siswa/mapel/jadwal) langsung di Spreadsheet.
+ * Frontend membandingkan angka ini (via getConfig) dengan yang tersimpan
+ * di localStorage tiap perangkat untuk tahu kapan cache lokal harus
+ * dibersihkan — lihat js/cache.js.
+ *
+ * SENGAJA membungkus semuanya dalam try-catch: fungsi ini dipanggil dari
+ * simple trigger, yang TIDAK BOLEH melempar error terlihat ke admin saat
+ * dia sedang mengedit sheet biasa. Kalau bump gagal (mis. sheet 01_CONFIG
+ * terhapus/berubah struktur), kegagalan diam-diam diabaikan — efeknya
+ * paling buruk cuma cache pengguna lain sedikit basi sampai bump berikutnya
+ * berhasil atau mereka pakai tombol "Sinkronkan Data" manual di app.
+ */
+function bumpDataVersion() {
+  try {
+    var ws = SS.getSheetByName('01_CONFIG');
+    if (!ws) return;
+    var data = ws.getDataRange().getValues();
+    var headers = data[2]; // baris header ada di baris ke-3 (index 2)
+    var keyCol = headers.indexOf('config_key');
+    var valCol = headers.indexOf('config_value');
+    if (keyCol === -1 || valCol === -1) return;
+
+    for (var i = 3; i < data.length; i++) {
+      if (String(data[i][keyCol]) === 'DATA_VERSION') {
+        var current = parseInt(data[i][valCol], 10) || 0;
+        ws.getRange(i + 1, valCol + 1).setValue(current + 1);
+        _configCache = null;
+        invalidateCache('01_CONFIG');
+        return;
+      }
+    }
+
+    // Baris DATA_VERSION belum ada (mis. baru pertama kali dipakai) —
+    // buat otomatis, kolom mengikuti header sheet SAAT INI (dinamis,
+    // bukan hardcode posisi, biar tahan kalau kolom pernah ditambah/geser).
+    var newRow = headers.map(function(h) {
+      if (h === 'config_key') return 'DATA_VERSION';
+      if (h === 'config_value') return 1;
+      if (h === 'keterangan') return 'Nomor versi data master (guru/kelas/siswa/mapel/jadwal) — NAIK OTOMATIS via trigger onEdit, JANGAN diedit manual';
+      if (h === 'tipe') return 'NUMBER';
+      if (h === 'aktif') return true;
+      return '';
+    });
+    ws.appendRow(newRow);
+    _configCache = null;
+    invalidateCache('01_CONFIG');
+  } catch (err) {
+    // Diamkan — lihat catatan di atas fungsi ini.
+  }
+}
+
 // ── Tanggal ───────────────────────────────────────────────────
 
 function today() {

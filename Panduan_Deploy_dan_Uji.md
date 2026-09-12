@@ -4,14 +4,14 @@
 Ikuti urutan ini persis. Setiap langkah ada cara verifikasinya sendiri —
 jangan lanjut ke langkah berikutnya kalau verifikasi gagal.
 
-> **CATATAN UNTUK YANG SUDAH PERNAH DEPLOY SEBELUMNYA (update 2026-09-08):**
-> Ada perubahan di `Code.gs` (endpoint `getJadwalKelasPublik` dipindah ke grup
-> publik + endpoint baru `getKelasPublik`) dan `js/app.js` ditulis ulang total.
-> Anda **wajib**:
-> 1. Timpa ulang isi `Code.gs`, `Data.gs`, dan file lain di Apps Script editor (lihat A3)
-> 2. Jalankan ulang `runFullTest()` (lihat A4) — SEBELUM lanjut deploy web app
-> 3. Timpa ulang seluruh isi folder `frontend/` di GitHub (termasuk file baru `jadwal-publik.html`)
-> Anda tidak perlu mengulang dari nol — cukup langkah A3–A4 dan B2, lalu lanjut ke Bagian C dengan skenario tambahan C8.5–C8.8.
+> **CATATAN UNTUK YANG SUDAH PERNAH DEPLOY SEBELUMNYA (update 2026-09-08, PUTARAN KE-3 — cache client-side):**
+> Ada perubahan lagi di backend (`Data.gs`, `Utils.gs`, `Code.gs` — trigger `onEdit` baru + field `data_version`)
+> dan frontend (file baru `js/cache.js`, `app.js` & `app.html` diubah). Anda **wajib**:
+> 1. Timpa ulang **SEMUA** file `.gs` di Apps Script editor (bukan cuma yang disebut di catatan sebelumnya)
+> 2. Jalankan ulang `runFullTest()` — ada test baru `testDataVersionCache()`
+> 3. **PENTING**: setelah deploy pertama kali dengan versi ini, buka sheet `01_CONFIG` sekali dan pastikan baris `DATA_VERSION` muncul otomatis (dibuat sendiri oleh sistem saat pertama kali ada yang mengedit sheet master data, atau saat `runFullTest()` dijalankan) — kalau setelah beberapa hari baris ini belum juga muncul, kabari untuk diperiksa
+> 4. Timpa ulang seluruh isi folder `frontend/` di GitHub, termasuk file baru `js/cache.js`
+> 5. **Test WAJIB**: jalankan skenario C8.9 (test cache & trigger `onEdit`) — ini fitur baru yang paling berisiko kalau ada yang tidak sesuai harapan
 
 ---
 
@@ -305,12 +305,98 @@ Login sebagai `admin`:
 
 ---
 
+### C8.9. Test Cache Client-Side (localStorage) & Trigger `onEdit`
+
+**Bagian ini WAJIB diuji** — ini fitur baru yang menyentuh cara app mengambil data master.
+
+**Cek dasar cache jalan:**
+- [ ] Login, buka menu manapun yang pakai data master (mis. **Jurnal Kelas** wali kelas, atau **Admin → Jadwal per Guru**) — catat lama loading pertama kali
+- [ ] Keluar dari menu itu lalu masuk lagi (atau reload halaman) → loading kedua kalinya harus terasa **instan** (data diambil dari cache lokal, bukan fetch ulang ke server)
+- [ ] Buka DevTools browser (F12) → tab **Application/Storage → Local Storage** → domain app Anda → harus terlihat key berawalan `jm_cache_` (mis. `jm_cache_guru`, `jm_cache_kelas`) dan `jm_cache_version`
+
+**Cek trigger `onEdit` otomatis menaikkan versi:**
+- [ ] Buka Spreadsheet langsung, cari sheet `01_CONFIG` → cari baris `DATA_VERSION`, catat angkanya (kalau belum ada barisnya, berarti belum pernah ke-trigger — lanjut ke langkah berikut dulu)
+- [ ] Edit satu sel apa saja di sheet `04_GURU` (mis. ubah lalu kembalikan lagi nama guru) → simpan
+- [ ] Cek lagi sheet `01_CONFIG` → angka `DATA_VERSION` harus naik 1 dari sebelumnya (butuh beberapa detik, trigger jalan di background)
+- [ ] Ulangi untuk sheet `05_KELAS`, `06_SISWA`, `07_MAPEL`, `09_JADWAL` — masing-masing harus ikut menaikkan `DATA_VERSION`
+- [ ] **Sebagai pembanding**: edit sesuatu di `10_JURNAL` atau `13_LOG` → `DATA_VERSION` **TIDAK BOLEH** ikut naik (sheet transaksional sengaja tidak memicu trigger ini)
+
+**Cek cache otomatis refresh setelah versi berubah:**
+- [ ] Setelah `DATA_VERSION` naik (dari langkah di atas), buka/reload app di browser yang sebelumnya sudah login → cache lama otomatis terhapus, data diambil ulang dari server (loading pertama terasa seperti biasa lagi, bukan instan)
+- [ ] Cek DevTools Local Storage lagi → `jm_cache_version` sudah update ke angka baru yang sama dengan `DATA_VERSION` di sheet
+
+**Cek tombol sinkronisasi manual:**
+- [ ] Klik ikon 🔄 di pojok kanan atas header (sebelah tombol Keluar) — ikon berputar sesaat, lalu muncul toast "Data berhasil disinkronkan"
+- [ ] Cek DevTools Local Storage → semua key `jm_cache_*` sebelumnya sudah bersih/terisi ulang dengan data baru
+- [ ] Tombol ini harus muncul dan berfungsi untuk **semua role** (Guru, Wali Kelas, Admin), tidak cuma admin
+
+**Cek gagal-aman (opsional, teknikal):**
+- [ ] Buka browser dalam mode Incognito/Private (localStorage biasanya tetap jalan di mode ini di kebanyakan browser modern, tapi coba juga browser dengan localStorage benar-benar dimatikan lewat pengaturan privasi jika memungkinkan) → app harus tetap bisa dipakai normal, hanya saja setiap buka menu akan selalu fetch ulang (tanpa manfaat cache, tapi TIDAK boleh muncul error)
+
+---
+
 ### C9. Test Batas Edit Jurnal
+
 
 - [ ] Di sheet `01_CONFIG`, ubah `BATAS_EDIT_HARI` dari `7` jadi `0`
 - [ ] Login sebagai guru, buka jurnal yang dibuat hari ini
 - [ ] Tombol **Edit Jurnal Ini** harus **hilang** (karena sudah lewat batas 0 hari)
 - [ ] Kembalikan `BATAS_EDIT_HARI` ke `7`
+
+---
+
+### C9.5. Test UI/UX Overhaul (2026-09-12) — Filter Chip, Visual Fintech, Dashboard Guru
+
+**Filter chip Jurnal Saya (poin 6):**
+- [ ] Login sebagai Guru → **Jurnal Saya**
+- [ ] Filter Bulan sekarang tampil sebagai deretan pill/chip bisa digeser horizontal (bukan dropdown) — cek bisa digeser di layar HP sempit
+- [ ] Tap salah satu bulan → chip itu jadi aktif (warna gelap), daftar jurnal ter-filter, halaman kembali ke page 1
+- [ ] Tap "Semua Bulan" → filter reset, semua jurnal tampil lagi
+
+**Filter card Admin Jurnal (poin 6):**
+- [ ] Login sebagai Admin → **Semua Jurnal**
+- [ ] Form filter (Tanggal/Kelas/Guru/Mapel) sekarang ada di dalam satu kartu putih dengan bayangan — bukan lagi menempel langsung ke background halaman
+- [ ] Fungsi filter tetap sama seperti sebelumnya (Tanggal wajib, Kelas/Guru/Mapel opsional) — pastikan TIDAK ada regresi
+
+**Visual fintech/SaaS (poin 7):**
+- [ ] Sepintas bandingkan kartu jadwal, kartu list admin, tombol utama — semua sudut lebih membulat & bayangan lebih lembut/konsisten dibanding versi sebelumnya
+- [ ] Tap kartu jadwal/list admin yang bisa diklik → ada efek "menekan" halus (scale kecil)
+- [ ] Tap tombol biru utama (mis. "Simpan Jurnal", "Cari") → ada efek tekan halus, tidak kaku
+
+**Dashboard Guru — perceived performance (poin 8):**
+- [ ] Login sebagai Guru, buka **Hari Ini** (dashboard) — pertama kali tetap tampil skeleton (belum ada data tersimpan)
+- [ ] Ganti tanggal ke hari lain via date-picker, lalu ganti balik lagi ke tanggal SEBELUMNYA yang sudah pernah dibuka → tampilan harus **langsung terisi** (tanpa skeleton kosong), dengan teks kecil "Memperbarui data terbaru…" muncul sebentar lalu hilang setelah data terbaru datang
+- [ ] Selama teks "Memperbarui…" tampil, data yang terlihat adalah data SEBELUMNYA (mis. status "Belum diisi") — setelah refresh selesai, kalau ada perubahan di server (mis. jurnal baru saja diisi dari device lain), status harus ikut update jadi "Sudah diisi"
+- [ ] Ganti-ganti tanggal dengan cepat (tap beberapa tanggal berturut-turut) → tidak boleh ada tampilan "salah tanggal" (data tanggal A muncul saat sedang melihat tanggal B); kalau ada, itu bug race-condition, laporkan
+- [ ] Tap tombol **↻ Perbarui Data** di dashboard → harus langsung tampil skeleton (bukan data lama), lalu terisi data fresh — ini beda dari perilaku "balik ke tanggal lama" di atas (yang sengaja tampil instan dari cache sementara)
+
+---
+
+### C9.6. Test Perluasan Lazy Loading & Menu Baru "Jadwal Saya" (2026-09-12, lanjutan)
+
+**Jurnal Saya (Guru) — instan saat balik ke filter/halaman yang sama:**
+- [ ] Login Guru → **Jurnal Saya**, buka salah satu bulan (mis. "Agustus") → tunggu sampai termuat
+- [ ] Pindah ke bulan lain, lalu tap "Agustus" lagi → daftar harus **langsung terisi** (tanpa skeleton kosong) dengan teks kecil "Memperbarui data terbaru…" sebentar, lalu hilang
+- [ ] Pindah halaman (kalau data >1 halaman), balik ke halaman sebelumnya → sama, instan
+
+**Jurnal Kelas (Wali Kelas) — instan saat balik ke tanggal yang sama:**
+- [ ] Login sebagai Wali Kelas → buka **Jurnal Kelas**, biarkan termuat
+- [ ] Ganti tanggal, lalu ganti balik ke tanggal semula → tampilan instan + "Memperbarui data terbaru…" muncul sebentar
+- [ ] Kalau ada perubahan jurnal dari device lain saat itu (mis. guru baru saja isi jurnal), status "Belum diisi"→"✓ Diisi" harus ikut ter-update setelah refresh selesai
+
+**Log Aktivitas (Admin) — instan saat balik ke halaman yang sama:**
+- [ ] Login Admin → **Log**, buka halaman 2, balik ke halaman 1, lalu ke halaman 2 lagi → halaman 2 langsung terisi instan + indikator halus, bukan skeleton kosong
+
+**Menu baru "Jadwal Saya" (Guru):**
+- [ ] Login sebagai Guru → cek bottom nav sekarang ada 4 menu: Hari Ini, Jurnal Saya, **Jadwal Saya** (baru), Jadwal Kelas
+- [ ] Buka **Jadwal Saya** → tampil tab hari (Senin–Jumat/Sabtu sesuai konfigurasi sekolah), isi jadwal mengajar milik sendiri per hari (mapel + kelas + jam), mirip tampilan "Jadwal per Guru" di Admin tapi tanpa dropdown pilih guru
+- [ ] Ganti-ganti tab hari → TIDAK ada request baru ke server tiap ganti tab (harus terasa instan, data sudah di memori)
+- [ ] Kalau akun Guru ini tidak terhubung ke data guru (kasus langka), harus tampil pesan "Akun ini belum terhubung ke data guru", bukan error/blank
+
+**Fix tombol 🔄 Sinkron Manual — sekarang benar-benar reset semua tampilan:**
+- [ ] Sebagai Admin, buka **Jadwal Guru**, pilih salah satu guru sampai jadwalnya termuat
+- [ ] Tanpa pindah halaman, tap tombol 🔄 di header (sinkron manual)
+- [ ] Halaman **Jadwal Guru** yang sedang dibuka harus tampil skeleton lagi lalu ambil data fresh dari server — SEBELUM perbaikan ini, halaman tetap menampilkan data lama begitu saja (bug lama, sekarang sudah diperbaiki)
 
 ---
 

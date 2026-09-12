@@ -1,6 +1,6 @@
 # Master Progress — Jurnal Mengajar
 **SMP Muhammadiyah 2 Cilacap**
-Terakhir diperbarui: 2026-09-08
+Terakhir diperbarui: 2026-09-12 (lanjutan)
 
 ---
 
@@ -330,6 +330,49 @@ File `js/app.js` (1043 baris) sudah ditulis ulang total dan lolos `node --check`
 
 ## Catatan Harian
 
+### 2026-09-08 (lanjutan — implementasi arsitektur cache client-side, poin 9–13)
+Setelah dibahas dulu (lihat percakapan sebelumnya) dan disepakati user, diimplementasikan:
+
+**Backend:**
+- `Data.gs`: `actionGetConfig()` sekarang mengembalikan field baru `data_version` (integer, dari `configVal('DATA_VERSION', 0)`)
+- `Utils.gs`: fungsi baru `bumpDataVersion()` — menaikkan `DATA_VERSION` di sheet `01_CONFIG` (kolom dicari dinamis via header, bukan hardcode posisi), otomatis membuat barisnya kalau belum ada saat pertama kali dipanggil. Dibungkus try-catch total (dipanggil dari simple trigger, tidak boleh throw)
+- `Code.gs`: trigger sederhana `onEdit(e)` (nama fungsi reserved Google Sheets, otomatis aktif tanpa setup manual admin) — memanggil `bumpDataVersion()` HANYA kalau sheet yang diedit adalah `04_GURU`/`05_KELAS`/`06_SISWA`/`07_MAPEL`/`09_JADWAL` (bukan sheet transaksional)
+- `TestSuite.gs`: test baru `testDataVersionCache()` (section 2.5), didaftarkan di `runFullTest()` — panggil `bumpDataVersion()` langsung dan verifikasi angkanya naik 1, DAN `getConfig()` ikut mengembalikan versi terbaru. **Catatan: test ini tidak bisa mensimulasikan trigger `onEdit` itu sendiri** (event object `e` tidak bisa dipalsukan dari `runFullTest()`) — perilaku triggernya HARUS dicek manual (lihat Panduan_Deploy_dan_Uji.md C8.9)
+
+**Frontend:**
+- File baru `frontend/js/cache.js` — modul `DataCache` (get/set/clearAll/syncIfNeeded), pakai `localStorage`, SEMUA operasi dibungkus try-catch (gagal-aman total: localStorage nonaktif/penuh → cache selalu dianggap kosong, app tetap jalan normal tanpa cache)
+- `app.js`: fungsi baru `cachedApiCall(cacheKey, action, params)` — dipakai untuk `getGuru`, `getKelas`, `getMapel`, `getJam`, `getSiswa` (per kelas_id, key `siswa_<kelas_id>`), `getJadwalPerGuru` (per guru_id, key `jadwalGuru_<guru_id>`). **TIDAK dipakai** untuk `getJadwalHariIni`/`getJadwalKelas`/`getJadwalKelasPublik`/jurnal/kehadiran/log — semua itu mengandung status transaksional (`sudah_diisi`, konflik) yang harus selalu live
+- `init()`: setelah `getConfig` sukses, panggil `DataCache.syncIfNeeded(appConfig.data_version)` — kalau versi beda dari yang tersimpan di perangkat, seluruh cache lokal dihapus (refresh lazy per-view, bukan preload sekaligus)
+- Fungsi baru `forceSyncData()` — dipanggil tombol 🔄 baru di header (`app.html`, SEMUA role bisa pakai): hapus semua cache, ambil `data_version` terbaru, lalu render ulang halaman yang sedang dibuka
+- `app.html`: tombol `#btnSync` + CSS animasi spin saat proses sync + `<script src="js/cache.js">` ditambahkan SEBELUM `app.js`
+
+**Dokumentasi:**
+- `README.md`: section "Cache Client-Side (localStorage...)" baru di bawah "Performa & Caching", menjelaskan kenapa BUKAN file JSON di GitHub (repo publik → data siswa anak di bawah umur bisa diakses tanpa login kalau ditaruh di sana)
+- `Master_Specification.md`: section baru 4.7 "Arsitektur Cache Client-Side" (diagram alur, keputusan sadar yang harus dipertahankan), `01_CONFIG` didokumentasikan ada key otomatis `DATA_VERSION` (jangan diedit manual), section 5 (Struktur File GitHub) diperbarui total supaya sesuai kondisi nyata (sebelumnya masih blueprint lama yang tidak sesuai implementasi — repo `/lab`, file `dashboard.js`/`jurnal.js`/`kelas.js`/`admin.js` yang sebenarnya tidak pernah ada, karena semua digabung jadi satu `app.js`)
+
+**Keamanan yang SENGAJA dihindari** (sesuai diskusi arsitektur): TIDAK ADA data siswa/guru/kelas yang disimpan sebagai file JSON statis di repo GitHub manapun — repo `smpmuda/jurnal` bersifat publik (syarat GitHub Pages gratis), jadi cache HANYA boleh di `localStorage` per-perangkat pengguna yang sudah login, tidak pernah di tempat yang bisa diakses tanpa autentikasi.
+
+Semua file `.gs`, `app.js`, dan `cache.js` lolos `node --check` setelah perubahan ini.
+
+### 2026-09-08 (lanjutan — feedback hasil uji manual user, 8 poin perbaikan)
+Backend TIDAK ada perubahan sesi ini — semua sudah cukup (getAllJurnal sudah support filter kelas_id, getJurnalSaya sudah support filter bulan sejak awal, ternyata belum dipakai di frontend).
+
+Perbaikan frontend (`app.js`, `app.html`, `index.html`):
+1. **Bug "Kembali" ke login — DIPERBAIKI.** Akar masalah: tombol pakai `history.back()` (browser history), yang masih menyimpan `login.html` sebagai halaman sebelumnya karena redirect login→app pakai `location.href` (bukan `replace`). Solusi: dibuat sistem riwayat navigasi custom DI DALAM APP (`navStack`, fungsi `goBack()`) yang sama sekali tidak menyentuh browser history. Semua tombol "← Kembali"/"← Batal" sekarang pakai `goBack()`.
+2. Menu **Jadwal Kelas** kini juga ada di: bottom nav Admin (baru), menu Beranda Admin (baru), dan link cepat "🏫 Lihat Jadwal Kelas Lain" di Dashboard Guru & Jurnal Kelas Wali (sebelumnya cuma ada di bottom nav Guru/Wali, kurang kelihatan).
+3. **Admin — Jurnal**: ditambah filter Kelas (dropdown, dari `getKelas`) — backend sudah support `kelas_id` sejak awal, tinggal disambungkan di UI.
+4. **Admin — Jadwal Guru**: diubah total dari daftar panjang semua hari jadi TAB HARI (Senin–Jumat, hanya hari aktif sesuai `appConfig.jam_maks`). Data diambil SEKALI saat pilih guru (`adminGuruDataCache`), ganti tab hari HANYA render ulang dari cache — TIDAK ada API call tambahan.
+5. **Log Aktivitas — pagination ketutup bottom nav — DIPERBAIKI**: `body padding-bottom` dinaikkan 76px→100px, `.pagination-bar` diberi `margin-bottom:30px` tambahan.
+6. **Bottom nav diredesain** — lebih ringan/modern: hilangkan background pill tebal, ganti jadi indikator strip tipis di atas ikon aktif, kurangi shadow, kurangi padding, tambah `backdrop-filter blur`. Berlaku untuk SEMUA role.
+7. **Homepage**: tombol "Baca Spesifikasi" **dihapus total** (sebelumnya cuma diarahkan ke .md, sekarang dihapus sesuai permintaan).
+8. **Guru/Wali Kelas**: ditambah hint text di bawah date-bar ("Menampilkan data [tanggal]. Pilih tanggal lain di atas untuk melihat data pada tanggal tersebut.") — dipakai di Dashboard & Jurnal Kelas.
+9. **Jurnal Saya**: ditambah filter Bulan (dropdown Januari–Desember) — backend `getJurnalSaya` ternyata SUDAH support param `bulan` sejak awal (belum pernah disambungkan ke UI).
+10. **Wali Kelas**: ditambah panel ringkasan **"😷 Siswa Tidak Hadir Hari Ini"** di atas Jurnal Kelas — mengumpulkan semua siswa tidak hadir dari SELURUH mapel hari itu (bukan per-mapel satu-satu), tiap baris tampilkan nama + badge status per mapel (siswa bisa tidak hadir di lebih dari 1 mapel dengan status berbeda, jadi ditampilkan multi-tag).
+
+**Poin 9–13 di feedback user (arsitektur cache/static data/sinkronisasi) — SENGAJA BELUM diimplementasikan**, sesuai instruksi eksplisit user ("jangan langsung implementasi, bahas dulu pola arsitekturnya"). Dijawab terpisah sebagai diskusi arsitektur, bukan kode.
+
+Semua file `.gs` dan `app.js` lolos `node --check` setelah semua perubahan di atas.
+
 ### 2026-09-08 (chat baru, lanjutan handoff)
 - Backend dikonfirmasi user: `runFullTest()` sudah dijalankan dan lulus untuk versi backend hasil rombakan performa (sebelum perubahan router sesi ini)
 - Keputusan Bagian K dikonfirmasi user: (1) menu "Jadwal Kelas" PUBLIK tanpa login, (2) tampilan kartu "Tidak Mengajar" bebas sesuai desain, (3) dokumentasi ikut diupdate
@@ -358,6 +401,89 @@ File `js/app.js` (1043 baris) sudah ditulis ulang total dan lolos `node --check`
 - Panduan_Deploy_dan_Uji.md dibuat: langkah A (spreadsheet+script), B (frontend+GitHub Pages), C (10 skenario uji end-to-end), D (checklist serah terima)
 - Deploy sungguhan & uji end-to-end BELUM dieksekusi — perlu dilakukan manual oleh user karena Claude tidak punya akses akun Google
 
+### 2026-09-12 (UI/UX & performance frontend overhaul — 10 poin, murni frontend)
+Instruksi eksplisit user: **tidak boleh ubah Apps Script/backend/business logic** kecuali tak terhindarkan. Sesi ini TIDAK ada perubahan file `apps-script/*.gs`.
+
+**Selesai (1–5, sesi sebelumnya, lihat handoff):**
+1. Bottom nav menutupi konten — diperbaiki di akar masalah: `--bottom-nav-height` diukur langsung dari elemen nav via `measureBottomNavHeight()`, dipakai di `.container` padding-bottom (otomatis 0 kalau nav disembunyikan).
+2. `jadwal-publik.html` ditulis ulang total — pakai `js/cache.js` (cache-first + background refresh), tab hari, skeleton loading.
+3. `viewJadwalKelasLihat` (in-app) — sama, cache per `kelas_id+hari`, tab hari.
+4. Tombol refresh versi blok besar (`refreshBlockButtonHtml()`) dipasang di Dashboard, Jurnal Kelas, Admin Beranda; ikon kecil `#btnSync` tetap ada.
+5. Skeleton loading menggantikan spinner kosong di semua view listing utama.
+
+**Selesai (6–8, sesi ini):**
+6. **Filter modernisasi**: filter Bulan di `viewJurnalSaya` diganti dari `<select>` jadi chip horizontal-scroll (`.chip-row`/`.chip`) — 12 opsi cocok untuk chip. Filter Admin Jurnal (Tanggal/Kelas/Guru/Mapel) TETAP pakai `<select>` (opsi terlalu banyak untuk chip, sesuai rekomendasi handoff), tapi dibungkus kartu `.filter-card` (radius-lg, shadow-md, padding rapi) supaya terasa satu kesatuan modern.
+7. **Visual redesign fintech/SaaS**: `--radius-lg`/`--shadow-md` sekarang dipakai konsisten di `.jadwal-card`, `.admin-list-item`, `.date-bar`, `.form-box`, `.skeleton-card`, `.pagination-bar`, `.absent-summary` (sebelumnya campur-campur, sebagian masih token lama `--radius`/`--shadow`). `.btn-primary`/`.btn-secondary` naik radius + `.btn-primary` dapat shadow biru + efek tap `scale(.98)`. `.jadwal-card`/`.admin-list-item` yang clickable dapat efek tap serupa. Topbar shadow dihaluskan (dari hitam pekat jadi shadow navy lembut).
+8. **Perceived-performance Dashboard Guru** (area yang dikonfirmasi user terasa berat: jadwal harian/dashboard guru — bukan lazy-loading data besar, karena data memang kecil, tapi kesan tunggu tiap buka/ganti tanggal). Solusi: cache **in-memory per-tanggal** (`dashboardCache`, var biasa di JS, BUKAN `localStorage`/`DataCache`) — begitu guru balik ke tanggal yang baru dilihat, tampilan langsung terisi dari data terakhir (skip skeleton) sambil menampilkan indikator halus "Memperbarui data terbaru…", DAN tetap selalu fetch ulang ke server di background karena status `sudah_diisi`/konflik transaksional bisa berubah kapan saja — data lama tidak pernah jadi sumber kebenaran akhir. Ada guard race-condition (`dashTanggal !== tanggalDiminta`) supaya respons API yang telat untuk tanggal lama tidak menimpa tampilan tanggal yang sedang aktif. Tombol refresh eksplisit (`forceSyncData()`) mengosongkan `dashboardCache` supaya klik refresh selalu tampilkan skeleton fresh, bukan data lama+spinner.
+
+**Diputuskan TIDAK dikerjakan lebih lanjut:**
+- Lazy-loading/infinite-scroll untuk area lain (form absensi, jadwal per-guru admin) — setelah audit, datanya memang kecil (maks ~35 siswa/kelas, maks 9 jam/hari) dan sudah tertangani pagination backend yang ada; menambah kompleksitas di situ tidak akan terasa manfaatnya.
+
+Semua file `.gs` (tidak diubah, tetap dicek ulang), `app.js`, `cache.js`, `api.js`, `auth.js`, `config.js` lolos `node --check`. `app.html`, `jadwal-publik.html`, `index.html`, `login.html` lolos cek balance div & CSS brace.
+
+### 2026-09-12 (lanjutan, sesi sama hari) — Perluasan lazy loading ke semua menu + menu baru "Jadwal Saya" (Guru)
+
+Permintaan user: pola stale-while-revalidate yang tadinya cuma di Dashboard
+Guru (poin 8) diminta diperluas ke semua menu yang dibuka Guru/Wali
+Kelas/Admin, plus menu baru untuk Guru melihat jadwal mingguan sendiri
+(seperti "Jadwal per Guru" di Admin).
+
+**Refactor — helper generik `staleWhileRevalidate(store, key, fetchFn, renderFn, isStillCurrent)`**
+ditambahkan di `app.js`, dipakai ulang di 4 tempat (bukan tulis ulang logic
+yang sama 4x). Prinsipnya identik dengan pola Dashboard Guru sebelumnya:
+render instan dari data terakhir (in-memory, per kombinasi state seperti
+tanggal/halaman/filter) + indikator halus "Memperbarui data terbaru…" +
+fetch ulang di background + guard race-condition via `isStillCurrent()`.
+
+Diterapkan ke:
+- **Jurnal Saya** (Guru) — key = `bulan_halaman`, cache `jurnalSayaCache`.
+- **Jurnal Kelas** (Wali Kelas) — key = `kelasId_tanggal`, cache `jurnalKelasCache`.
+- **Log Aktivitas** (Admin) — key = nomor halaman, cache `adminLogCache`.
+- Dashboard Guru (Hari Ini) — sudah pakai pola ini dari sesi sebelumnya, tidak diubah lagi.
+
+**TIDAK diterapkan ke "Jadwal Guru" (Admin) dengan pola yang sama** —
+sengaja, karena data itu (jadwal mengajar per guru) sifatnya master/jarang
+berubah, bukan transaksional. Pola yang benar untuk data ini sudah ada
+sejak awal: `cachedApiCall()` + `localStorage` (invalidasi lewat
+`DATA_VERSION`), yang sudah membuatnya instan begitu pernah dibuka
+sebelumnya. Menyamakannya dengan pola transaksional (auto-refresh tiap
+buka) justru akan melanggar arsitektur cache yang sudah disepakati
+(re-fetch tanpa alasan tiap buka, padahal jadwal guru sangat jarang
+berubah dalam satu tahun ajaran).
+
+**Bug ditemukan & diperbaiki sekalian**: `forceSyncData()` (tombol 🔄
+sinkron manual) sebelumnya HANYA mengosongkan `dashboardCache`, TIDAK
+mengosongkan cache in-memory `adminGuruDataCache` (Jadwal per Guru versi
+Admin). Akibatnya: kalau admin sedang membuka jadwal seorang guru lalu
+menekan tombol sinkron manual, tampilan tetap pakai data lama yang sudah
+ada di memori (skip pengambilan ulang), padahal maksud tombol itu adalah
+"paksa ambil data terbaru". Sekarang `forceSyncData()` mengosongkan
+SEMUA cache in-memory: `dashboardCache`, `jurnalSayaCache`,
+`jurnalKelasCache`, `adminLogCache`, `adminGuruDataCache`,
+`jadwalSayaGuruCache` — baru kemudian `DataCache.clearAll()` untuk
+localStorage.
+
+**Menu baru: "Jadwal Saya" (Guru)** — route `jadwal-saya` (beda dari
+`jurnal-saya`), ditambahkan ke bottom nav Guru (4 item sekarang: Hari
+Ini, Jurnal Saya, Jadwal Saya, Jadwal Kelas). Menampilkan jadwal mengajar
+mingguan milik guru yang login sendiri, dengan tab hari (Senin–Jumat/Sabtu
+sesuai `appConfig.jam_maks`) — persis pola tampilan "Jadwal per Guru" di
+Admin (fungsi render `renderAdminGuruHariContent()` dipakai ulang, tidak
+ditulis ulang), tapi `guru_id` dikunci ke `session.guru_id` sendiri, tanpa
+dropdown pilih guru. Datanya pakai `cachedApiCall('jadwalGuru_' +
+session.guru_id, ...)` — key cache SAMA dengan yang dipakai Admin kalau
+admin membuka jadwal guru yang sama, jadi tidak ada duplikasi fetch antara
+kedua tampilan.
+
+File yang diubah: `frontend/js/app.js` saja. Tidak ada perubahan
+`apps-script/*.gs`, tidak ada endpoint baru — semua pakai endpoint yang
+sudah ada (`getJurnalSaya`, `getJadwalKelas`, `getLog`, `getJadwalPerGuru`).
+
+Semua `.gs` (tidak diubah, tetap dicek ulang), `app.js` lolos `node --check`.
+`app.html`, `jadwal-publik.html`, `index.html`, `login.html` lolos cek
+balance div. Tidak ada nama fungsi/variabel top-level yang bentrok
+(dicek otomatis).
+
 ---
 
 ## Keputusan Teknis Penting
@@ -385,4 +511,4 @@ File `js/app.js` (1043 baris) sudah ditulis ulang total dan lolos `node --check`
 
 | Tanggal | Masalah | Resolusi | Status |
 |---|---|---|---|
-| - | - | - | - |
+| 2026-09-08 | `testCacheCorrectness` di TestSuite.gs menulis baris log dummy dengan `aksi:'TEST'`, melanggar data validation dropdown kolom D sheet `13_LOG` (hanya terima LOGIN/LOGOUT/CREATE/UPDATE/DELETE) → `runFullTest()` gagal dengan error di baris sheet, bukan di logic cache-nya | Ganti `'TEST'` jadi `'CREATE'` di baris `appendManyToSheet('13_LOG', ...)` pada `testCacheCorrectness` | Selesai |

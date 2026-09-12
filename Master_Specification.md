@@ -87,6 +87,17 @@ JAM_MAKS_KAMIS, JAM_MAKS_JUMAT, JAM_MAKS_SABTU
 ZONA_WAKTU, IZIN_EDIT_JURNAL, BATAS_EDIT_HARI
 ```
 
+**Konfigurasi otomatis (JANGAN diedit manual):**
+```
+DATA_VERSION  — [BARU, 2026-09-08] Nomor versi data master, naik +1 setiap
+                kali sheet 04_GURU/05_KELAS/06_SISWA/07_MAPEL/09_JADWAL
+                diedit, lewat trigger onEdit(e) di Code.gs. Dipakai cache
+                client-side (frontend/js/cache.js) untuk tahu kapan cache
+                di localStorage tiap pengguna harus dibersihkan. Baris ini
+                dibuat OTOMATIS oleh bumpDataVersion() (Utils.gs) saat
+                pertama kali dipakai — tidak perlu dibuat manual.
+```
+
 #### `02_TAHUN_AJARAN`
 | Kolom | Tipe | Contoh |
 |---|---|---|
@@ -320,37 +331,67 @@ GET  /exec?action=getJadwalKelasPublik&kelas_id=&hari=  → [BARU] publik, tanpa
 - Password **TIDAK di-hash** (keputusan eksplisit, Bagian H.1) — jangan tambahkan SHA-256 tanpa diskusi ulang dengan user
 - Sanitasi input sebelum menulis ke Spreadsheet
 
+### 4.7 Arsitektur Cache Client-Side [BARU, 2026-09-08]
+
+> Keputusan ini diambil setelah diskusi keamanan eksplisit — lihat catatan
+> di bawah sebelum mengubah apapun di area ini.
+
+```
+Spreadsheet (sumber data asli)
+        │
+        │  Apps Script — endpoint token-authenticated, SAMA seperti biasa
+        ▼
+   Browser tiap pengguna
+   ┌──────────────────────────────┐
+   │ localStorage (per perangkat) │  ← guru, kelas, mapel, jam, siswa
+   │ + DATA_VERSION               │     per-kelas, jadwal per-guru
+   └──────────────────────────────┘
+        │
+        ▼
+     Aplikasi (app.js)
+```
+
+**Keputusan sadar yang PENTING dipertahankan:**
+- **TIDAK PERNAH** menyimpan data master (siswa/guru/kelas) sebagai file JSON statis di repo GitHub. Repo `smpmuda/jurnal` bersifat publik (syarat GitHub Pages gratis) — menaruh data siswa (anak di bawah umur) di sana berarti bisa diakses siapa saja tanpa login, JAUH lebih tidak aman dibanding kondisi sekarang (di balik token Apps Script).
+- Cache HANYA di `localStorage`, scope per-perangkat, tidak pernah dikirim ke mana pun.
+- Data transaksional (jurnal, kehadiran, log, dan endpoint jadwal yang mengandung status `sudah_diisi`/konflik) **TIDAK PERNAH** masuk cache ini — selalu live.
+- Invalidasi otomatis via `DATA_VERSION` di `01_CONFIG`, dinaikkan oleh trigger sederhana `onEdit(e)` (Code.gs) — admin tidak perlu setup apapun.
+- Tombol sinkronisasi manual (🔄) tersedia untuk SEMUA role sebagai jalan pintas.
+- Kalau `localStorage` gagal/nonaktif, aplikasi otomatis fallback ke perilaku lama (selalu fetch live) — TIDAK PERNAH menyebabkan error ke pengguna. Lihat `frontend/js/cache.js` untuk detail implementasi gagal-aman ini.
+
 ---
 
 ## 5. Struktur File GitHub
 
+> **[DIPERBARUI]** Bagian ini adalah blueprint awal proyek. Struktur final
+> lebih sederhana (satu `app.js` sebagai single-file SPA, bukan dipecah
+> per-halaman; CSS inline di `<style>` masing-masing file HTML, bukan
+> file `.css` terpisah). Repo juga sudah dipindah dari `smpmuda/lab` ke
+> `smpmuda/jurnal`.
+
 ```
-smpmuda/lab/
+smpmuda/jurnal/
 │
-├── index.html              ← halaman utama / landing
-├── app.html                ← aplikasi utama (single-page)
-├── login.html              ← halaman login
-│
-├── css/
-│   ├── style.css
-│   └── print.css           ← untuk cetak laporan
+├── index.html                ← halaman utama / landing (publik)
+├── app.html                  ← aplikasi utama (single-page, CSS inline)
+├── login.html                ← halaman login
+├── jadwal-publik.html        ← [BARU] Jadwal Kelas publik, TANPA login
 │
 ├── js/
-│   ├── config.js           ← API_URL + APP_NAME + VERSION
-│   ├── auth.js             ← login, logout, session
-│   ├── api.js              ← wrapper fetch ke Apps Script
-│   ├── app.js              ← router + init
-│   ├── dashboard.js        ← halaman dashboard
-│   ├── jurnal.js           ← isi/lihat jurnal
-│   ├── kelas.js            ← jurnal kelas (wali kelas)
-│   └── admin.js            ← manajemen data master
+│   ├── config.js              ← API_URL + APP_NAME + VERSION
+│   ├── api.js                 ← wrapper fetch ke Apps Script
+│   ├── auth.js                ← login, logout, session
+│   ├── cache.js               ← [BARU] cache data master di localStorage
+│   └── app.js                 ← router + SEMUA view (single file)
 │
-├── assets/
-│   ├── logo.png
-│   └── favicon.ico
+├── apps-script/                ← source Apps Script (di-sync via clasp)
+│   ├── Code.gs                  ← router + trigger onEdit
+│   ├── Auth.gs, Data.gs, Jurnal.gs, Utils.gs, TestSuite.gs
+│   └── appsscript.json
 │
-├── Master_Specification.md ← file ini
-├── Master_Progress.md      ← progress tracker
+├── Master_Specification.md    ← file ini
+├── Master_Progress.md         ← progress tracker
+├── Panduan_Deploy_dan_Uji.md
 └── README.md
 ```
 

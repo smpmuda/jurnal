@@ -17,6 +17,14 @@ var $main = document.getElementById('mainContent');
 var $nav  = document.getElementById('bottomNav');
 var $roleTabs = document.getElementById('roleTabs');
 
+// ── Riwayat navigasi dalam-app (BUKAN browser history) ──────────
+// Dipakai goBack() supaya tombol "Kembali" selalu balik ke halaman
+// sebelumnya DI DALAM APLIKASI, bukan ke browser history (yang bisa
+// berisi halaman login.html sebelum redirect ke app.html).
+var navStack = [];
+var currentRoute = null;
+var currentParams = null;
+
 // ── State cache sederhana ──────────────────────────────────────
 var STATE = {
   jadwalHariIni: null,
@@ -36,11 +44,65 @@ function init() {
     if (res.ok) {
       appConfig = res.data;
       document.getElementById('hdrAppName').textContent = appConfig.nama_aplikasi;
+      // Cek versi data master (guru/kelas/siswa/mapel/jadwal). Kalau beda
+      // dari yang tersimpan di perangkat ini, cache lokal dibersihkan
+      // otomatis — data akan di-fetch ulang secara lazy saat dibutuhkan.
+      DataCache.syncIfNeeded(appConfig.data_version);
     }
     setupRoleTabs();
     setupBottomNav();
     navigate(defaultRouteFor(activeRole));
   });
+}
+
+// [BARU] Cache data master (guru/kelas/mapel/jam/siswa/jadwal-per-guru) di
+// localStorage perangkat ini. HANYA dipakai untuk data yang TIDAK mengandung
+// status transaksional (sudah_diisi/konflik dsb.) — lihat catatan di cache.js.
+function cachedApiCall(cacheKey, action, params) {
+  var cached = DataCache.get(cacheKey);
+  if (cached !== null) return Promise.resolve({ ok: true, data: cached });
+  return API.call(action, params, 'GET').then(function(res) {
+    if (res.ok) DataCache.set(cacheKey, res.data);
+    return res;
+  });
+}
+
+// Tombol 🔄 di header — paksa sinkronisasi kapan saja, dipakai SEMUA role.
+function forceSyncData() {
+  var $btn = document.getElementById('btnSync');
+  if ($btn) $btn.classList.add('syncing');
+  document.querySelectorAll('.refresh-block-btn').forEach(function(b) { b.classList.add('syncing'); });
+
+  API.call('getConfig', {}, 'GET', false).then(function(res) {
+    // Reset semua cache in-memory (BUKAN localStorage — itu ditangani
+    // DataCache.clearAll() di bawah). Tanpa ini, view yang sedang tidak
+    // aktif tetap menyimpan data lama walau tombol ini ditekan.
+    dashboardCache = {};
+    jurnalSayaCache = {};
+    jurnalKelasCache = {};
+    adminLogCache = {};
+    adminGuruDataCache = null;
+    jadwalSayaGuruCache = null;
+    if (res.ok) {
+      appConfig = res.data;
+      DataCache.clearAll();
+      DataCache.setLocalVersion(appConfig.data_version || 0);
+    } else {
+      DataCache.clearAll(); // tetap bersihkan meski getConfig gagal, biar aman
+    }
+    if ($btn) $btn.classList.remove('syncing');
+    showToast('Data berhasil disinkronkan ✓');
+    // Muat ulang halaman yang sedang dibuka supaya langsung pakai data baru
+    navigate(currentRoute || defaultRouteFor(activeRole), currentParams || {}, { isBack: true });
+  });
+}
+
+// [BARU] Tombol refresh berbentuk BLOK besar (bukan ikon kecil) — dipasang
+// di halaman-halaman utama tiap role (Dashboard, Jurnal Kelas, Admin
+// Beranda) supaya jelas terlihat dan mudah disentuh di HP.
+function refreshBlockButtonHtml() {
+  return '<button class="refresh-block-btn" onclick="forceSyncData()">'
+    + '<span class="icon">↻</span> Perbarui Data</button>';
 }
 
 function roleLabel(r) {
@@ -84,6 +146,7 @@ function setupBottomNav() {
     items = [
       { route: 'dashboard',          icon: '📅', label: 'Hari Ini' },
       { route: 'jurnal-saya',        icon: '📋', label: 'Jurnal Saya' },
+      { route: 'jadwal-saya',        icon: '🗓️', label: 'Jadwal Saya' },
       { route: 'jadwal-kelas-lihat', icon: '🏫', label: 'Jadwal Kelas' },
     ];
   } else if (activeRole === 'WALI_KELAS') {
@@ -93,14 +156,19 @@ function setupBottomNav() {
     ];
   } else if (activeRole === 'ADMIN') {
     items = [
-      { route: 'admin-home',   icon: '⚙️', label: 'Beranda' },
-      { route: 'admin-jurnal', icon: '📚', label: 'Jurnal' },
-      { route: 'admin-guru',   icon: '👤', label: 'Guru' },
-      { route: 'admin-log',    icon: '🕒', label: 'Log' },
+      { route: 'admin-home',         icon: '⚙️', label: 'Beranda' },
+      { route: 'admin-jurnal',       icon: '📚', label: 'Jurnal' },
+      { route: 'admin-guru',         icon: '👤', label: 'Guru' },
+      { route: 'admin-jadwal-kelas', icon: '🗓️', label: 'Jadwal Kelas' },
+      { route: 'admin-log',          icon: '🕒', label: 'Log' },
     ];
   }
 
-  if (items.length <= 1) { $nav.style.display = 'none'; return; }
+  if (items.length <= 1) {
+    $nav.style.display = 'none';
+    document.documentElement.style.setProperty('--bottom-nav-height', '0px');
+    return;
+  }
 
   $nav.style.display = 'flex';
   $nav.innerHTML = items.map(function(it) {
@@ -111,7 +179,24 @@ function setupBottomNav() {
   $nav.querySelectorAll('.nav-item').forEach(function(btn) {
     btn.addEventListener('click', function() { navigate(btn.dataset.route); });
   });
+
+  measureBottomNavHeight();
 }
+
+// [BARU] Ukur tinggi bottom-nav SESUNGGUHNYA (bukan tebakan) dan simpan ke
+// CSS var --bottom-nav-height, dipakai .container untuk padding-bottom.
+// Ini akar perbaikan bug "bottom nav menutupi content" — sebelumnya pakai
+// angka tetap (100px) yang bisa meleset di perangkat dengan safe-area
+// berbeda (notch/home-indicator).
+function measureBottomNavHeight() {
+  requestAnimationFrame(function() {
+    var h = ($nav && $nav.style.display !== 'none') ? $nav.offsetHeight : 0;
+    document.documentElement.style.setProperty('--bottom-nav-height', h + 'px');
+  });
+}
+
+window.addEventListener('resize', measureBottomNavHeight);
+window.addEventListener('orientationchange', measureBottomNavHeight);
 
 function setActiveNav(route) {
   $nav.querySelectorAll('.nav-item').forEach(function(btn) {
@@ -121,13 +206,25 @@ function setActiveNav(route) {
 
 // ── Router ───────────────────────────────────────────────────
 
-function navigate(route, params) {
-  setActiveNav(route);
+function navigate(route, params, opts) {
+  opts = opts || {};
   params = params || {};
+
+  // Simpan halaman saat ini ke stack SEBELUM pindah (kecuali saat ini
+  // sendiri adalah hasil dari goBack/replace, supaya stack tidak muter balik)
+  if (!opts.isBack && currentRoute) {
+    navStack.push({ route: currentRoute, params: currentParams });
+    if (navStack.length > 30) navStack.shift();
+  }
+  currentRoute = route;
+  currentParams = params;
+
+  setActiveNav(route);
 
   var routes = {
     'dashboard':          viewDashboard,
     'jurnal-saya':        viewJurnalSaya,
+    'jadwal-saya':        viewJadwalSayaGuru,
     'jurnal-form':        viewJurnalForm,
     'jurnal-detail':      viewJurnalDetail,
     'jurnal-edit':        viewJurnalEdit,
@@ -137,16 +234,53 @@ function navigate(route, params) {
     'admin-jurnal':       viewAdminJurnal,
     'admin-guru':         viewAdminGuru,
     'admin-log':          viewAdminLog,
+    'admin-jadwal-kelas': viewJadwalKelasLihat,
   };
 
   if (routes[route]) routes[route](params);
   else $main.innerHTML = '<div class="empty"><div class="empty-icon">🚧</div><div class="empty-text">Halaman tidak ditemukan</div></div>';
 }
 
-// ── Helper: loading & toast ─────────────────────────────────────
+// Tombol "Kembali" di semua form/detail SELALU pakai fungsi ini,
+// TIDAK PERNAH pakai history.back() (itu penyebab bug kembali ke login).
+function goBack(fallbackRoute, fallbackParams) {
+  var prev = navStack.pop();
+  if (prev) navigate(prev.route, prev.params, { isBack: true });
+  else navigate(fallbackRoute || defaultRouteFor(activeRole), fallbackParams || {}, { isBack: true });
+}
+
+// ── Helper: loading, skeleton & toast ───────────────────────────
+
+// [BARU] Kutipan ringan ditampilkan sambil menunggu data pertama kali
+// (belum ada cache sama sekali) — supaya terasa "hidup", bukan sekadar
+// ikon spinner kosong.
+var LOADING_QUOTES = [
+  'Menyiapkan data terbaru untuk Anda...',
+  'Sabar sebentar, hampir selesai...',
+  'Sedang mengambil jadwal terkini...',
+  'Menata data supaya rapi dilihat...',
+  'Tunggu sebentar, hampir siap...',
+];
+
+function pickLoadingQuote() {
+  return LOADING_QUOTES[Math.floor(Math.random() * LOADING_QUOTES.length)];
+}
 
 function showLoading(msg) {
-  $main.innerHTML = '<div class="loading-box"><div class="spinner"></div><br>' + (msg || 'Memuat...') + '</div>';
+  $main.innerHTML = '<div class="loading-box"><div class="spinner"></div><br>' + (msg || pickLoadingQuote()) + '</div>';
+}
+
+// [BARU] Skeleton kartu (dipakai saat BENAR-BENAR belum ada cache sama
+// sekali — first load) — terasa lebih hidup dibanding spinner polos, dan
+// memberi gambaran bentuk konten yang akan muncul.
+function skeletonListHtml(quote, count) {
+  count = count || 3;
+  var html = '';
+  for (var i = 0; i < count; i++) {
+    html += '<div class="skeleton-card"><div class="skeleton-line w60"></div><div class="skeleton-line w35"></div></div>';
+  }
+  html += '<div class="loading-quote">' + esc(quote || pickLoadingQuote()) + '</div>';
+  return html;
 }
 
 function showToast(msg, isError) {
@@ -214,39 +348,76 @@ function bindPagination(pageInfo, onNavigate) {
 
 var dashTanggal = todayStr();
 
+// [BARU — poin 8] Cache IN-MEMORY (bukan localStorage/DataCache) per tanggal,
+// hilang saat reload halaman. Tujuannya murni kesan performa: begitu guru
+// balik ke tanggal yang baru saja dilihat (mis. Hari Ini -> tanggal lain ->
+// Hari Ini lagi), tampilan langsung terisi dari data terakhir alih-alih
+// skeleton kosong, SAMBIL tetap selalu fetch ulang ke server di background
+// karena status "sudah_diisi"/konflik transaksional dan bisa berubah kapan
+// saja (guru lain, edit dari device lain, dst). Data lama TIDAK PERNAH jadi
+// sumber kebenaran akhir — hanya dipakai sebagai placeholder sementara.
+var dashboardCache = {};
+
 function viewDashboard(params) {
   if (params.tanggal) dashTanggal = params.tanggal;
-  showLoading('Memuat jadwal...');
+  var tanggalDiminta = dashTanggal;
+  var cached = dashboardCache[tanggalDiminta];
 
-  API.call('getJadwalHariIni', { tanggal: dashTanggal }, 'GET').then(function(res) {
-    if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
+  if (cached) {
+    renderDashboardHtml(cached, true);
+  } else {
+    $main.innerHTML = refreshBlockButtonHtml() + skeletonListHtml('Menyiapkan jadwal hari ini...');
+  }
+
+  API.call('getJadwalHariIni', { tanggal: tanggalDiminta }, 'GET').then(function(res) {
+    // Kalau user sudah pindah ke tanggal lain sebelum respons ini datang,
+    // buang saja hasilnya — render tanggal itu sudah ditangani request-nya sendiri.
+    if (dashTanggal !== tanggalDiminta) return;
+
+    if (!res.ok) { if (!cached) $main.innerHTML = errorBox(res.error); return; }
 
     var d = res.data;
     STATE.jadwalHariIni = d;
-
-    var html = '';
-    html += dateBarHtml(dashTanggal, 'dashboard');
-    html += '<div class="sec-title">Jadwal Mengajar — ' + fmtTanggalIndo(dashTanggal) + '</div>';
-
-    if (d.jadwal.length === 0) {
-      html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jam pelajaran pada hari ini</div></div>';
-    } else {
-      d.jadwal.forEach(function(j) {
-        html += jadwalCardHtml(j);
-      });
-    }
-
-    $main.innerHTML = html;
-    bindDateBar('dashboard');
-    bindJadwalCards();
+    dashboardCache[tanggalDiminta] = d;
+    renderDashboardHtml(d, false);
   });
 }
 
-function dateBarHtml(tanggal, route) {
-  return '<div class="date-bar">'
+function renderDashboardHtml(d, updating) {
+  var html = '';
+  html += refreshBlockButtonHtml();
+  html += dateBarHtml(dashTanggal, 'dashboard', true);
+  if (updating) {
+    html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
+  }
+  html += '<div class="sec-title">Jadwal Mengajar — ' + fmtTanggalIndo(dashTanggal) + '</div>';
+
+  if (d.jadwal.length === 0) {
+    html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jam pelajaran pada hari ini</div></div>';
+  } else {
+    d.jadwal.forEach(function(j) {
+      html += jadwalCardHtml(j);
+    });
+  }
+
+  $main.innerHTML = html;
+  bindDateBar('dashboard');
+  bindJadwalCards();
+}
+
+function dateBarHtml(tanggal, route, showJadwalKelasLink) {
+  var isHariIni = tanggal === todayStr();
+  var html = '<div class="date-bar">'
     + '<input type="date" id="datePicker" value="' + tanggal + '">'
     + '<button class="date-today-btn" id="btnToday">Hari Ini</button>'
     + '</div>';
+  html += '<div class="hint-text">'
+    + (isHariIni ? 'Menampilkan data hari ini.' : 'Menampilkan data ' + fmtTanggalIndo(tanggal) + '.')
+    + ' Pilih tanggal lain di atas untuk melihat data pada tanggal tersebut.</div>';
+  if (showJadwalKelasLink) {
+    html += '<div class="quick-link-row"><a class="quick-link" onclick="navigate(\'jadwal-kelas-lihat\')">🏫 Lihat Jadwal Kelas Lain</a></div>';
+  }
+  return html;
 }
 
 function bindDateBar(route) {
@@ -318,8 +489,8 @@ function viewJurnalForm(params) {
   showLoading('Memuat data siswa & jam...');
 
   Promise.all([
-    API.call('getSiswa', { kelas_id: blok.kelas_id }, 'GET'),
-    API.call('getJam', {}, 'GET'),
+    cachedApiCall('siswa_' + blok.kelas_id, 'getSiswa', { kelas_id: blok.kelas_id }),
+    cachedApiCall('jam', 'getJam', {}),
   ]).then(function(results) {
     var resSiswa = results[0], resJam = results[1];
     if (!resSiswa.ok) { $main.innerHTML = errorBox(resSiswa.error); return; }
@@ -332,7 +503,7 @@ function viewJurnalForm(params) {
     var jamTerpilih = {};
     (blok.jam_ids || []).forEach(function(id) { jamTerpilih[id] = true; });
 
-    var html = '<button class="btn-back" onclick="navigate(\'dashboard\', {tanggal:\'' + blok.tanggal + '\'})">← Kembali</button>';
+    var html = '<button class="btn-back" onclick="goBack(\'dashboard\', {tanggal:\'' + blok.tanggal + '\'})">← Kembali</button>';
     html += '<div class="form-box">';
 
     html += '<div class="form-grid-2">';
@@ -453,7 +624,7 @@ function bindSimpanJurnal(blok) {
         return;
       }
       showToast('Jurnal berhasil disimpan ✓');
-      navigate('dashboard', { tanggal: blok.tanggal });
+      navigate('dashboard', { tanggal: blok.tanggal }, { isBack: true });
     });
   });
 }
@@ -469,7 +640,7 @@ function viewJurnalDetail(params) {
     if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
     var j = res.data;
 
-    var html = '<button class="btn-back" onclick="history.back()">← Kembali</button>';
+    var html = '<button class="btn-back" onclick="goBack()">← Kembali</button>';
     html += '<div class="form-box">';
 
     html += '<div class="form-grid-2">';
@@ -537,7 +708,7 @@ function viewJurnalEdit(params) {
 
   showLoading('Memuat data siswa...');
 
-  API.call('getSiswa', { kelas_id: j.kelas_id }, 'GET').then(function(res) {
+  cachedApiCall('siswa_' + j.kelas_id, 'getSiswa', { kelas_id: j.kelas_id }).then(function(res) {
     if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
     var siswa = res.data;
 
@@ -545,7 +716,7 @@ function viewJurnalEdit(params) {
     var khMap = {};
     (j.tidak_hadir || []).forEach(function(k) { khMap[String(k.nis)] = k.status; });
 
-    var html = '<button class="btn-back" onclick="navigate(\'jurnal-detail\', {jurnal_id:\'' + j.jurnal_id + '\'})">← Batal, kembali ke detail</button>';
+    var html = '<button class="btn-back" onclick="goBack()">← Batal, kembali ke detail</button>';
     html += '<div class="form-box">';
 
     html += '<div class="form-grid-2">';
@@ -623,7 +794,7 @@ function bindUpdateJurnal(jurnalId) {
         return;
       }
       showToast('Perubahan berhasil disimpan ✓');
-      navigate('jurnal-detail', { jurnal_id: jurnalId });
+      navigate('jurnal-detail', { jurnal_id: jurnalId }, { isBack: true });
     });
   });
 }
@@ -632,39 +803,97 @@ function bindUpdateJurnal(jurnalId) {
 // VIEW: Jurnal Saya (Riwayat Guru) — PAKAI PAGINATION
 // ══════════════════════════════════════════════════════════════
 
+// [BARU] Helper generik "stale-while-revalidate" IN-MEMORY (BUKAN
+// localStorage/DataCache) — dipakai semua menu berisi data TRANSAKSIONAL
+// (status bisa berubah live) yang tetap ingin terasa instan saat dibuka
+// ulang/difilter ulang: Hari Ini, Jurnal Saya, Jurnal Kelas (Wali Kelas),
+// Log (Admin). Data lama HANYA placeholder sementara — selalu di-refresh
+// dari server segera setelah render dan TIDAK PERNAH jadi sumber
+// kebenaran akhir (beda sifat dari cache master data di cache.js).
+//   store          objek in-memory biasa {}, key -> data terakhir
+//   key            string unik utk kombinasi state saat ini (tanggal/hal/filter)
+//   fetchFn        function() -> Promise<{ok, data, error}>
+//   renderFn       function(data, updating) — bangun & pasang HTML + binding
+//   isStillCurrent function() -> boolean, dicek SETELAH fetch selesai supaya
+//                  respons yang telat untuk state lama tidak menimpa
+//                  tampilan state yang sedang aktif sekarang (guard race-condition)
+function staleWhileRevalidate(store, key, fetchFn, renderFn, isStillCurrent) {
+  var cached = store[key];
+  if (cached) renderFn(cached, true);
+
+  fetchFn().then(function(res) {
+    if (!isStillCurrent()) return;
+    if (!res.ok) { if (!cached) $main.innerHTML = errorBox(res.error); return; }
+    store[key] = res.data;
+    renderFn(res.data, false);
+  });
+
+  return !!cached;
+}
+
 var jurnalSayaPage = 1;
+var jurnalSayaBulan = '';
+var jurnalSayaCache = {}; // in-memory per "bulan_page" — lihat staleWhileRevalidate
+var BULAN_NAMA = ['','Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 
 function viewJurnalSaya(params) {
   if (params.page) jurnalSayaPage = params.page;
   else jurnalSayaPage = 1;
-  showLoading('Memuat riwayat jurnal...');
 
-  API.call('getJurnalSaya', { page: jurnalSayaPage }, 'GET').then(function(res) {
-    if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
-    var d = res.data;
+  var reqBulan = jurnalSayaBulan;
+  var reqPage = jurnalSayaPage;
+  var key = reqBulan + '_' + reqPage;
 
-    var html = '<div class="sec-title">Riwayat Jurnal Saya (' + d.totalItems + ')</div>';
+  if (!jurnalSayaCache[key]) $main.innerHTML = skeletonListHtml('Mengambil riwayat jurnal Anda...');
 
-    if (d.items.length === 0) {
-      html += '<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Belum ada jurnal yang dibuat</div></div>';
-    } else {
-      d.items.forEach(function(j) {
-        html += '<div class="admin-list-item" data-id="' + j.jurnal_id + '" style="cursor:pointer">'
-          + '<div><div class="admin-list-main">' + esc(j.nama_mapel) + ' — ' + esc(j.nama_kelas) + '</div>'
-          + '<div class="admin-list-sub">' + fmtTanggalIndo(j.tanggal) + ' · ' + esc(j.jam_label) + '</div></div>'
-          + '<span class="badge badge-done">✓</span></div>';
-      });
-    }
-    html += paginationHtml(d);
+  staleWhileRevalidate(
+    jurnalSayaCache, key,
+    function() {
+      var apiParams = { page: reqPage };
+      if (reqBulan) apiParams.bulan = reqBulan;
+      return API.call('getJurnalSaya', apiParams, 'GET');
+    },
+    function(d, updating) { renderJurnalSayaHtml(d, updating); },
+    function() { return jurnalSayaBulan === reqBulan && jurnalSayaPage === reqPage; }
+  );
+}
 
-    $main.innerHTML = html;
-    document.querySelectorAll('.admin-list-item[data-id]').forEach(function(item) {
-      item.addEventListener('click', function() {
-        navigate('jurnal-detail', { jurnal_id: item.dataset.id });
-      });
+function renderJurnalSayaHtml(d, updating) {
+  var html = '<div class="sec-title">Riwayat Jurnal Saya (' + d.totalItems + ')</div>';
+  if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
+  html += '<div class="chip-row" id="filterBulanSaya">';
+  html += '<button type="button" class="chip' + (jurnalSayaBulan === '' ? ' active' : '') + '" data-val="">Semua Bulan</button>';
+  for (var b = 1; b <= 12; b++) {
+    var bStr = String(b).padStart(2, '0');
+    html += '<button type="button" class="chip' + (bStr === jurnalSayaBulan ? ' active' : '') + '" data-val="' + bStr + '">' + BULAN_NAMA[b] + '</button>';
+  }
+  html += '</div>';
+
+  if (d.items.length === 0) {
+    html += '<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Belum ada jurnal yang dibuat</div></div>';
+  } else {
+    d.items.forEach(function(j) {
+      html += '<div class="admin-list-item" data-id="' + j.jurnal_id + '" style="cursor:pointer">'
+        + '<div><div class="admin-list-main">' + esc(j.nama_mapel) + ' — ' + esc(j.nama_kelas) + '</div>'
+        + '<div class="admin-list-sub">' + fmtTanggalIndo(j.tanggal) + ' · ' + esc(j.jam_label) + '</div></div>'
+        + '<span class="badge badge-done">✓</span></div>';
     });
-    bindPagination(d, function(newPage) { navigate('jurnal-saya', { page: newPage }); });
+  }
+  html += paginationHtml(d);
+
+  $main.innerHTML = html;
+  document.querySelectorAll('#filterBulanSaya .chip').forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      jurnalSayaBulan = chip.dataset.val;
+      navigate('jurnal-saya', { page: 1 });
+    });
   });
+  document.querySelectorAll('.admin-list-item[data-id]').forEach(function(item) {
+    item.addEventListener('click', function() {
+      navigate('jurnal-detail', { jurnal_id: item.dataset.id });
+    });
+  });
+  bindPagination(d, function(newPage) { navigate('jurnal-saya', { page: newPage }); });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -672,6 +901,8 @@ function viewJurnalSaya(params) {
 // ══════════════════════════════════════════════════════════════
 
 var jurnalKelasTanggal = todayStr();
+
+var jurnalKelasCache = {}; // in-memory per "kelasId_tanggal" — lihat staleWhileRevalidate
 
 function viewJurnalKelas(params) {
   if (params.tanggal) jurnalKelasTanggal = params.tanggal;
@@ -683,27 +914,72 @@ function viewJurnalKelas(params) {
   }
   STATE._kelasIdCtx = kelasId;
 
-  showLoading('Memuat jurnal kelas...');
+  var reqKelasId = kelasId;
+  var reqTanggal = jurnalKelasTanggal;
+  var key = reqKelasId + '_' + reqTanggal;
 
-  API.call('getJadwalKelas', { kelas_id: kelasId, tanggal: jurnalKelasTanggal }, 'GET').then(function(res) {
-    if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
-    var d = res.data;
+  if (!jurnalKelasCache[key]) {
+    $main.innerHTML = refreshBlockButtonHtml() + skeletonListHtml('Mengambil data jurnal kelas...');
+  }
 
-    var html = '<div class="wali-info-badge">👤 Wali Kelas: ' + esc(d.nama_kelas) + '</div>';
-    html += dateBarHtml(jurnalKelasTanggal, 'jurnal-kelas');
-    html += '<div class="sec-title">Jurnal Kelas · ' + fmtTanggalIndo(jurnalKelasTanggal) + '</div>';
+  staleWhileRevalidate(
+    jurnalKelasCache, key,
+    function() { return API.call('getJadwalKelas', { kelas_id: reqKelasId, tanggal: reqTanggal }, 'GET'); },
+    function(d, updating) { renderJurnalKelasHtml(d, updating); },
+    function() { return STATE._kelasIdCtx === reqKelasId && jurnalKelasTanggal === reqTanggal; }
+  );
+}
 
-    if (d.mapel.length === 0) {
-      html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
-    } else {
-      d.mapel.forEach(function(m) {
-        html += mapelCardHtml(m);
-      });
-    }
+function renderJurnalKelasHtml(d, updating) {
+  var html = refreshBlockButtonHtml();
+  html += '<div class="wali-info-badge">👤 Wali Kelas: ' + esc(d.nama_kelas) + '</div>';
+  html += dateBarHtml(jurnalKelasTanggal, 'jurnal-kelas', true);
+  if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
+  html += tidakHadirSummaryHtml(d.mapel);
+  html += '<div class="sec-title">Jurnal Kelas · ' + fmtTanggalIndo(jurnalKelasTanggal) + '</div>';
 
-    $main.innerHTML = html;
-    bindDateBar('jurnal-kelas');
+  if (d.mapel.length === 0) {
+    html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
+  } else {
+    d.mapel.forEach(function(m) {
+      html += mapelCardHtml(m);
+    });
+  }
+
+  $main.innerHTML = html;
+  bindDateBar('jurnal-kelas');
+}
+
+// [BARU] Ringkasan siswa tidak hadir hari itu (gabungan dari semua mapel yang
+// sudah diisi) — supaya wali kelas bisa lihat cepat tanpa buka satu-satu.
+function tidakHadirSummaryHtml(mapelList) {
+  var map = {}; // nis -> { nama, entries: [{mapel, status, keterangan}] }
+  mapelList.forEach(function(m) {
+    if (!m.sudah_diisi || !m.tidak_hadir) return;
+    m.tidak_hadir.forEach(function(t) {
+      var key = String(t.nis);
+      if (!map[key]) map[key] = { nama: t.nama, entries: [] };
+      map[key].entries.push({ mapel: m.nama_mapel, status: t.status, keterangan: t.keterangan || '' });
+    });
   });
+
+  var nisList = Object.keys(map);
+  if (nisList.length === 0) return '';
+
+  var html = '<div class="absent-summary">';
+  html += '<div class="absent-summary-title">😷 Siswa Tidak Hadir Hari Ini (' + nisList.length + ')</div>';
+  nisList.forEach(function(nis) {
+    var s = map[nis];
+    html += '<div class="absent-row"><div class="absent-nama">' + esc(s.nama) + '</div><div class="absent-tags">';
+    s.entries.forEach(function(e) {
+      var cls = 'pill-' + e.status.charAt(0).toLowerCase();
+      html += '<span class="pill ' + cls + '" title="' + esc(e.mapel) + (e.keterangan ? ' — ' + esc(e.keterangan) : '') + '">'
+        + esc(e.status) + ' · ' + esc(e.mapel) + '</span>';
+    });
+    html += '</div></div>';
+  });
+  html += '</div>';
+  return html;
 }
 
 function mapelCardHtml(m) {
@@ -740,82 +1016,114 @@ function mapelCardHtml(m) {
 // ══════════════════════════════════════════════════════════════
 // VIEW BARU: Jadwal Kelas (lihat jadwal kelas manapun, tanpa kehadiran)
 // Dipakai GURU & WALI_KELAS dari bottom nav. Panggil getJadwalKelasPublik.
+// [DIPERBAIKI] cache-first (kelas list + jadwal per kelas+hari), tab hari
+// (bukan dropdown lagi), skeleton loading di awal, TIDAK reload spinner
+// tiap ganti tab kalau kombinasi kelas+hari itu sudah pernah dibuka.
 // ══════════════════════════════════════════════════════════════
 
-var jadwalLihatState = { kelas_id: '', hari: hariIniIndo() };
-var HARI_OPSI = ['SENIN','SELASA','RABU','KAMIS','JUMAT','SABTU'];
+var jadwalLihatState = { kelas_id: '', hari: '' };
 
 function viewJadwalKelasLihat(params) {
-  showLoading('Memuat daftar kelas...');
+  var cachedKelas = DataCache.get('kelas');
 
-  var kelasPromise = STATE.kelasList ? Promise.resolve({ ok: true, data: STATE.kelasList }) : API.call('getKelas', {}, 'GET');
+  if (cachedKelas !== null) {
+    // Cache hit — render UI LANGSUNG, tanpa spinner sama sekali.
+    renderJadwalKelasLihatShell(cachedKelas);
+  } else {
+    // Belum pernah ada cache — tampilkan skeleton (bukan spinner kosong).
+    $main.innerHTML = skeletonListHtml('Menyiapkan daftar kelas...');
+  }
 
-  kelasPromise.then(function(res) {
-    if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
-    STATE.kelasList = res.data.slice().sort(function(a, b) { return String(a.nama_kelas).localeCompare(String(b.nama_kelas)); });
+  cachedApiCall('kelas', 'getKelas', {}).then(function(res) {
+    if (!res.ok) { if (cachedKelas === null) $main.innerHTML = errorBox(res.error); return; }
+    // Kalau tadinya sudah render dari cache DAN data baru identik, tidak
+    // perlu render ulang (hindari flicker). Render ulang hanya kalau ini
+    // load pertama (belum ada cache) — background refresh untuk kelas
+    // jarang sekali benar-benar berubah dalam satu sesi pemakaian.
+    if (cachedKelas === null) renderJadwalKelasLihatShell(res.data);
+  });
+}
 
-    if (!jadwalLihatState.kelas_id && STATE.kelasList.length > 0) {
-      jadwalLihatState.kelas_id = STATE.kelasList[0].kelas_id;
-    }
+function renderJadwalKelasLihatShell(kelasData) {
+  STATE.kelasList = kelasData.slice().sort(function(a, b) { return String(a.nama_kelas).localeCompare(String(b.nama_kelas)); });
 
-    var html = '<div class="sec-title">Jadwal Kelas</div>';
-    html += '<div class="form-grid-2">';
-    html += '<div class="form-group"><span class="form-label">Pilih Kelas</span>';
-    html += '<select class="select-input" id="selKelas">';
-    STATE.kelasList.forEach(function(k) {
-      html += '<option value="' + k.kelas_id + '"' + (k.kelas_id === jadwalLihatState.kelas_id ? ' selected' : '') + '>' + esc(k.nama_kelas) + '</option>';
-    });
-    html += '</select></div>';
+  if (!jadwalLihatState.kelas_id && STATE.kelasList.length > 0) {
+    jadwalLihatState.kelas_id = STATE.kelasList[0].kelas_id;
+  }
+  if (!jadwalLihatState.hari) {
+    var hi = hariIniIndo();
+    jadwalLihatState.hari = (hi === 'MINGGU') ? 'SENIN' : hi;
+  }
 
-    html += '<div class="form-group"><span class="form-label">Pilih Hari</span>';
-    html += '<select class="select-input" id="selHari">';
-    HARI_OPSI.forEach(function(h) {
-      html += '<option value="' + h + '"' + (h === jadwalLihatState.hari ? ' selected' : '') + '>' + capitalizeHari(h) + '</option>';
-    });
-    html += '</select></div>';
-    html += '</div>';
+  var html = '<div class="sec-title">Jadwal Kelas</div>';
+  html += '<div class="select-wrap"><span class="form-label">Pilih Kelas</span>';
+  html += '<select class="select-input" id="selKelas">';
+  STATE.kelasList.forEach(function(k) {
+    html += '<option value="' + k.kelas_id + '"' + (k.kelas_id === jadwalLihatState.kelas_id ? ' selected' : '') + '>' + esc(k.nama_kelas) + '</option>';
+  });
+  html += '</select></div>';
 
-    html += '<div id="jadwalLihatHasil"></div>';
+  html += '<span class="form-label">Pilih Hari</span>';
+  html += '<div class="day-tabs" id="hariTabs">';
+  hariAktifList().forEach(function(h) {
+    html += '<button class="day-tab' + (h === jadwalLihatState.hari ? ' active' : '') + '" data-hari="' + h + '">' + capitalizeHari(h).substring(0, 3) + '</button>';
+  });
+  html += '</div>';
 
-    $main.innerHTML = html;
+  html += '<div id="jadwalLihatHasil"></div>';
 
-    document.getElementById('selKelas').addEventListener('change', function(e) {
-      jadwalLihatState.kelas_id = e.target.value;
-      loadJadwalKelasLihat();
-    });
-    document.getElementById('selHari').addEventListener('change', function(e) {
-      jadwalLihatState.hari = e.target.value;
-      loadJadwalKelasLihat();
-    });
+  $main.innerHTML = html;
 
+  document.getElementById('selKelas').addEventListener('change', function(e) {
+    jadwalLihatState.kelas_id = e.target.value;
     loadJadwalKelasLihat();
   });
+  document.querySelectorAll('#hariTabs .day-tab').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (btn.dataset.hari === jadwalLihatState.hari) return;
+      jadwalLihatState.hari = btn.dataset.hari;
+      document.querySelectorAll('#hariTabs .day-tab').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      loadJadwalKelasLihat();
+    });
+  });
+
+  loadJadwalKelasLihat();
 }
 
 function loadJadwalKelasLihat() {
   var $hasil = document.getElementById('jadwalLihatHasil');
   if (!$hasil) return;
-  $hasil.innerHTML = '<div class="loading-box"><div class="spinner"></div></div>';
 
-  API.call('getJadwalKelasPublik', { kelas_id: jadwalLihatState.kelas_id, hari: jadwalLihatState.hari }, 'GET').then(function(res) {
-    if (!res.ok) { $hasil.innerHTML = errorBox(res.error); return; }
-    var d = res.data;
+  var cacheKey = 'jadwalKelasLihat_' + jadwalLihatState.kelas_id + '_' + jadwalLihatState.hari;
+  var cached = DataCache.get(cacheKey);
 
-    if (d.jadwal.length === 0) {
-      $hasil.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
-      return;
-    }
+  if (cached !== null) {
+    renderJadwalLihatHasil($hasil, cached); // instan, tanpa loading sama sekali
+  } else {
+    $hasil.innerHTML = skeletonListHtml(pickLoadingQuote());
+  }
 
-    var html = '';
-    d.jadwal.forEach(function(j) {
-      html += '<div class="jadwal-card">'
-        + '<div class="jadwal-top"><div class="jadwal-info">'
-        + '<div class="jadwal-mapel">' + esc(j.nama_mapel) + '</div>'
-        + '<div class="jadwal-meta">' + esc(j.jam_label) + ' · Guru: ' + esc(j.nama_guru) + '</div>'
-        + '</div></div></div>';
-    });
-    $hasil.innerHTML = html;
+  cachedApiCall(cacheKey, 'getJadwalKelasPublik', { kelas_id: jadwalLihatState.kelas_id, hari: jadwalLihatState.hari }).then(function(res) {
+    if (!res.ok) { if (cached === null) $hasil.innerHTML = errorBox(res.error); return; }
+    renderJadwalLihatHasil($hasil, res.data);
   });
+}
+
+function renderJadwalLihatHasil($hasil, d) {
+  if (d.jadwal.length === 0) {
+    $hasil.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
+    return;
+  }
+  var html = '';
+  d.jadwal.forEach(function(j) {
+    html += '<div class="jadwal-card">'
+      + '<div class="jadwal-top"><div class="jadwal-info">'
+      + '<div class="jadwal-mapel">' + esc(j.nama_mapel) + '</div>'
+      + '<div class="jadwal-meta">' + esc(j.jam_label) + ' · Guru: ' + esc(j.nama_guru) + '</div>'
+      + '</div></div></div>';
+  });
+  $hasil.innerHTML = html;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -823,13 +1131,15 @@ function loadJadwalKelasLihat() {
 // ══════════════════════════════════════════════════════════════
 
 function viewAdminHome(params) {
-  var html = '<div class="sec-title">Ringkasan</div>';
+  var html = refreshBlockButtonHtml();
+  html += '<div class="sec-title">Ringkasan</div>';
   html += '<div class="admin-list-item"><div><div class="admin-list-main">' + esc(session.nama) + '</div>'
     + '<div class="admin-list-sub">Admin — akses penuh sistem</div></div></div>';
 
   html += '<div class="sec-title">Menu</div>';
   html += '<div class="admin-list-item" id="goJurnal" style="cursor:pointer"><div class="admin-list-main">📚 Semua Jurnal</div></div>';
   html += '<div class="admin-list-item" id="goGuru" style="cursor:pointer"><div class="admin-list-main">👤 Jadwal per Guru</div></div>';
+  html += '<div class="admin-list-item" id="goJadwalKelas" style="cursor:pointer"><div class="admin-list-main">🗓️ Jadwal Kelas</div></div>';
   html += '<div class="admin-list-item" id="goLog" style="cursor:pointer"><div class="admin-list-main">🕒 Log Aktivitas</div></div>';
 
   html += '<div class="sec-title">Catatan</div>';
@@ -840,6 +1150,7 @@ function viewAdminHome(params) {
   $main.innerHTML = html;
   document.getElementById('goJurnal').addEventListener('click', function() { navigate('admin-jurnal'); });
   document.getElementById('goGuru').addEventListener('click', function() { navigate('admin-guru'); });
+  document.getElementById('goJadwalKelas').addEventListener('click', function() { navigate('admin-jadwal-kelas'); });
   document.getElementById('goLog').addEventListener('click', function() { navigate('admin-log'); });
 }
 
@@ -847,32 +1158,44 @@ function viewAdminHome(params) {
 // VIEW: Admin — Semua Jurnal (filter tanggal wajib + guru + mapel, pagination)
 // ══════════════════════════════════════════════════════════════
 
-var adminJurnalFilter = { tanggal: todayStr(), guru_id: '', mapel_id: '', page: 1 };
+var adminJurnalFilter = { tanggal: todayStr(), guru_id: '', mapel_id: '', kelas_id: '', page: 1 };
 
 function viewAdminJurnal(params) {
-  showLoading('Memuat data guru & mapel...');
+  showLoading('Memuat data guru, kelas & mapel...');
 
   Promise.all([
-    STATE.guruList ? Promise.resolve({ ok: true, data: STATE.guruList }) : API.call('getGuru', {}, 'GET'),
-    STATE.mapelList ? Promise.resolve({ ok: true, data: STATE.mapelList }) : API.call('getMapel', {}, 'GET'),
+    cachedApiCall('guru', 'getGuru', {}),
+    cachedApiCall('mapel', 'getMapel', {}),
+    cachedApiCall('kelas', 'getKelas', {}),
   ]).then(function(results) {
-    var resGuru = results[0], resMapel = results[1];
+    var resGuru = results[0], resMapel = results[1], resKelas = results[2];
     if (!resGuru.ok) { $main.innerHTML = errorBox(resGuru.error); return; }
     if (!resMapel.ok) { $main.innerHTML = errorBox(resMapel.error); return; }
+    if (!resKelas.ok) { $main.innerHTML = errorBox(resKelas.error); return; }
     STATE.guruList = resGuru.data;
     STATE.mapelList = resMapel.data;
+    STATE.kelasList = resKelas.data.slice().sort(function(a, b) { return String(a.nama_kelas).localeCompare(String(b.nama_kelas)); });
 
     var html = '<div class="sec-title">Filter Jurnal (maks. 1 hari per pencarian)</div>';
+    html += '<div class="filter-card">';
     html += '<div class="form-grid-2">';
     html += '<div class="form-group"><span class="form-label">Tanggal *</span>';
     html += '<input type="date" class="select-input" id="filterTanggal" value="' + adminJurnalFilter.tanggal + '"></div>';
+    html += '<div class="form-group"><span class="form-label">Kelas</span>';
+    html += '<select class="select-input" id="filterKelas"><option value="">Semua Kelas</option>';
+    STATE.kelasList.forEach(function(k) {
+      html += '<option value="' + k.kelas_id + '"' + (k.kelas_id === adminJurnalFilter.kelas_id ? ' selected' : '') + '>' + esc(k.nama_kelas) + '</option>';
+    });
+    html += '</select></div>';
+    html += '</div>';
+
+    html += '<div class="form-grid-2" style="margin-top:14px">';
     html += '<div class="form-group"><span class="form-label">Guru</span>';
     html += '<select class="select-input" id="filterGuru"><option value="">Semua Guru</option>';
     STATE.guruList.forEach(function(g) {
       html += '<option value="' + g.guru_id + '"' + (g.guru_id === adminJurnalFilter.guru_id ? ' selected' : '') + '>' + esc(g.nama) + '</option>';
     });
     html += '</select></div>';
-    html += '</div>';
 
     html += '<div class="form-group"><span class="form-label">Mapel</span>';
     html += '<select class="select-input" id="filterMapel"><option value="">Semua Mapel</option>';
@@ -880,8 +1203,10 @@ function viewAdminJurnal(params) {
       html += '<option value="' + m.mapel_id + '"' + (m.mapel_id === adminJurnalFilter.mapel_id ? ' selected' : '') + '>' + esc(m.nama) + '</option>';
     });
     html += '</select></div>';
+    html += '</div>';
 
-    html += '<button class="btn-primary" id="btnCariJurnal">Cari</button>';
+    html += '<button class="btn-primary" id="btnCariJurnal" style="margin-top:14px">Cari</button>';
+    html += '</div>';
     html += '<div id="adminJurnalHasil" style="margin-top:16px"></div>';
 
     $main.innerHTML = html;
@@ -890,6 +1215,7 @@ function viewAdminJurnal(params) {
       adminJurnalFilter.tanggal = document.getElementById('filterTanggal').value;
       adminJurnalFilter.guru_id = document.getElementById('filterGuru').value;
       adminJurnalFilter.mapel_id = document.getElementById('filterMapel').value;
+      adminJurnalFilter.kelas_id = document.getElementById('filterKelas').value;
       adminJurnalFilter.page = 1;
       if (!adminJurnalFilter.tanggal) { showToast('Tanggal wajib diisi', true); return; }
       loadAdminJurnal();
@@ -902,11 +1228,12 @@ function viewAdminJurnal(params) {
 function loadAdminJurnal() {
   var $hasil = document.getElementById('adminJurnalHasil');
   if (!$hasil) return;
-  $hasil.innerHTML = '<div class="loading-box"><div class="spinner"></div></div>';
+  $hasil.innerHTML = skeletonListHtml('Mencari data jurnal...');
 
   var params = { tanggal: adminJurnalFilter.tanggal, page: adminJurnalFilter.page };
   if (adminJurnalFilter.guru_id) params.guru_id = adminJurnalFilter.guru_id;
   if (adminJurnalFilter.mapel_id) params.mapel_id = adminJurnalFilter.mapel_id;
+  if (adminJurnalFilter.kelas_id) params.kelas_id = adminJurnalFilter.kelas_id;
 
   API.call('getAllJurnal', params, 'GET').then(function(res) {
     if (!res.ok) { $hasil.innerHTML = errorBox(res.error); return; }
@@ -939,12 +1266,13 @@ function loadAdminJurnal() {
 // VIEW BARU: Admin — Jadwal per Guru
 // ══════════════════════════════════════════════════════════════
 
-var adminGuruState = { guru_id: '' };
+var adminGuruState = { guru_id: '', activeHari: '' };
+var adminGuruDataCache = null; // hasil getJadwalPerGuru guru yg sedang aktif, dipakai ulang saat ganti tab hari
 
 function viewAdminGuru(params) {
   showLoading('Memuat daftar guru...');
 
-  var guruPromise = STATE.guruList ? Promise.resolve({ ok: true, data: STATE.guruList }) : API.call('getGuru', {}, 'GET');
+  var guruPromise = cachedApiCall('guru', 'getGuru', {});
 
   guruPromise.then(function(res) {
     if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
@@ -968,6 +1296,8 @@ function viewAdminGuru(params) {
 
     document.getElementById('selGuru').addEventListener('change', function(e) {
       adminGuruState.guru_id = e.target.value;
+      adminGuruState.activeHari = ''; // reset tab hari saat ganti guru
+      adminGuruDataCache = null;
       loadAdminGuru();
     });
 
@@ -975,32 +1305,149 @@ function viewAdminGuru(params) {
   });
 }
 
+// Hari "aktif" = hari yang punya jam pelajaran di konfigurasi sekolah
+// (appConfig.jam_maks) — biasanya SENIN..JUMAT. SABTU tidak disertakan
+// getConfig kalau JAM_MAKS_SABTU = 0, jadi otomatis tersaring di sini.
+function hariAktifList() {
+  if (appConfig && appConfig.jam_maks) return Object.keys(appConfig.jam_maks);
+  return ['SENIN','SELASA','RABU','KAMIS','JUMAT'];
+}
+
 function loadAdminGuru() {
   var $hasil = document.getElementById('adminGuruHasil');
   if (!$hasil) return;
-  $hasil.innerHTML = '<div class="loading-box"><div class="spinner"></div></div>';
 
-  API.call('getJadwalPerGuru', { guru_id: adminGuruState.guru_id }, 'GET').then(function(res) {
+  // Kalau data guru ini sudah pernah diambil, langsung render dari cache
+  // (ganti tab hari TIDAK memanggil API lagi — sesuai permintaan).
+  if (adminGuruDataCache) { renderAdminGuruTabs($hasil); return; }
+
+  $hasil.innerHTML = skeletonListHtml('Mengambil jadwal guru...');
+
+  cachedApiCall('jadwalGuru_' + adminGuruState.guru_id, 'getJadwalPerGuru', { guru_id: adminGuruState.guru_id }).then(function(res) {
     if (!res.ok) { $hasil.innerHTML = errorBox(res.error); return; }
-    var d = res.data;
+    adminGuruDataCache = res.data;
+    renderAdminGuruTabs($hasil);
+  });
+}
 
-    var html = '';
-    d.jadwal_per_hari.forEach(function(hariBlok) {
-      html += '<div class="sec-title">' + capitalizeHari(hariBlok.hari) + '</div>';
-      if (hariBlok.jadwal.length === 0) {
-        html += '<div class="jadwal-card kosong"><div class="jadwal-top"><div class="jadwal-info">'
-          + '<div class="jadwal-mapel muted">Tidak ada jadwal</div></div></div></div>';
-      } else {
-        hariBlok.jadwal.forEach(function(j) {
-          html += '<div class="jadwal-card"><div class="jadwal-top"><div class="jadwal-info">'
-            + '<div class="jadwal-mapel">' + esc(j.nama_mapel) + '</div>'
-            + '<div class="jadwal-meta">' + esc(j.nama_kelas) + ' · ' + esc(j.jam_label) + '</div>'
-            + '</div></div></div>';
-        });
-      }
+function renderAdminGuruTabs($hasil) {
+  var d = adminGuruDataCache;
+  var hariAktif = hariAktifList();
+  var jadwalByHari = {};
+  d.jadwal_per_hari.forEach(function(hb) { jadwalByHari[hb.hari] = hb.jadwal; });
+
+  if (!adminGuruState.activeHari || hariAktif.indexOf(adminGuruState.activeHari) === -1) {
+    adminGuruState.activeHari = hariAktif[0] || 'SENIN';
+  }
+
+  var html = '<div class="day-tabs">';
+  hariAktif.forEach(function(h) {
+    html += '<button class="day-tab' + (h === adminGuruState.activeHari ? ' active' : '') + '" data-hari="' + h + '">'
+      + capitalizeHari(h).substring(0, 3) + '</button>';
+  });
+  html += '</div>';
+
+  html += '<div id="adminGuruHariContent">' + renderAdminGuruHariContent(jadwalByHari, adminGuruState.activeHari) + '</div>';
+
+  $hasil.innerHTML = html;
+
+  $hasil.querySelectorAll('.day-tab').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      adminGuruState.activeHari = btn.dataset.hari;
+      $hasil.querySelectorAll('.day-tab').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      // Ganti isi konten saja dari data yang SUDAH ADA — tidak panggil API lagi
+      document.getElementById('adminGuruHariContent').innerHTML = renderAdminGuruHariContent(jadwalByHari, adminGuruState.activeHari);
     });
+  });
+}
 
-    $hasil.innerHTML = html;
+function renderAdminGuruHariContent(jadwalByHari, hari) {
+  var jadwal = jadwalByHari[hari] || [];
+  if (jadwal.length === 0) {
+    return '<div class="jadwal-card kosong"><div class="jadwal-top"><div class="jadwal-info">'
+      + '<div class="jadwal-mapel muted">Tidak ada jadwal</div></div></div></div>';
+  }
+  var html = '';
+  jadwal.forEach(function(j) {
+    html += '<div class="jadwal-card"><div class="jadwal-top"><div class="jadwal-info">'
+      + '<div class="jadwal-mapel">' + esc(j.nama_mapel) + '</div>'
+      + '<div class="jadwal-meta">' + esc(j.nama_kelas) + ' · ' + esc(j.jam_label) + '</div>'
+      + '</div></div></div>';
+  });
+  return html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// VIEW BARU: Guru — Jadwal Saya (jadwal mengajar mingguan milik sendiri,
+// TIDAK sama dengan "Hari Ini" yang cuma tampilkan hari berjalan).
+// Datanya sama sifatnya dengan "Jadwal per Guru" di Admin (master/jarang
+// berubah) sehingga dipakaikan pola cache yang sama: cachedApiCall +
+// localStorage, BUKAN staleWhileRevalidate (itu untuk data transaksional).
+// guru_id dikunci ke akun yang sedang login — tanpa dropdown pilih guru.
+// ══════════════════════════════════════════════════════════════
+
+var jadwalSayaGuruState = { activeHari: '' };
+var jadwalSayaGuruCache = null; // hasil getJadwalPerGuru milik sendiri, dipakai ulang saat ganti tab hari
+
+function viewJadwalSayaGuru(params) {
+  if (!session.guru_id) {
+    $main.innerHTML = '<div class="empty"><div class="empty-icon">👤</div><div class="empty-text">Akun ini belum terhubung ke data guru</div></div>';
+    return;
+  }
+
+  var html = '<div class="sec-title">Jadwal Mengajar Saya</div>';
+  html += '<div id="jadwalSayaGuruHasil"></div>';
+  $main.innerHTML = html;
+
+  loadJadwalSayaGuru();
+}
+
+function loadJadwalSayaGuru() {
+  var $hasil = document.getElementById('jadwalSayaGuruHasil');
+  if (!$hasil) return;
+
+  // Sama seperti Admin — ganti tab hari TIDAK memanggil API lagi kalau
+  // data sudah pernah diambil.
+  if (jadwalSayaGuruCache) { renderJadwalSayaGuruTabs($hasil); return; }
+
+  $hasil.innerHTML = skeletonListHtml('Mengambil jadwal mengajar Anda...');
+
+  cachedApiCall('jadwalGuru_' + session.guru_id, 'getJadwalPerGuru', { guru_id: session.guru_id }).then(function(res) {
+    if (!res.ok) { $hasil.innerHTML = errorBox(res.error); return; }
+    jadwalSayaGuruCache = res.data;
+    renderJadwalSayaGuruTabs($hasil);
+  });
+}
+
+function renderJadwalSayaGuruTabs($hasil) {
+  var d = jadwalSayaGuruCache;
+  var hariAktif = hariAktifList();
+  var jadwalByHari = {};
+  d.jadwal_per_hari.forEach(function(hb) { jadwalByHari[hb.hari] = hb.jadwal; });
+
+  if (!jadwalSayaGuruState.activeHari || hariAktif.indexOf(jadwalSayaGuruState.activeHari) === -1) {
+    jadwalSayaGuruState.activeHari = hariAktif[0] || 'SENIN';
+  }
+
+  var html = '<div class="day-tabs">';
+  hariAktif.forEach(function(h) {
+    html += '<button class="day-tab' + (h === jadwalSayaGuruState.activeHari ? ' active' : '') + '" data-hari="' + h + '">'
+      + capitalizeHari(h).substring(0, 3) + '</button>';
+  });
+  html += '</div>';
+
+  html += '<div id="jadwalSayaGuruHariContent">' + renderAdminGuruHariContent(jadwalByHari, jadwalSayaGuruState.activeHari) + '</div>';
+
+  $hasil.innerHTML = html;
+
+  $hasil.querySelectorAll('.day-tab').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      jadwalSayaGuruState.activeHari = btn.dataset.hari;
+      $hasil.querySelectorAll('.day-tab').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById('jadwalSayaGuruHariContent').innerHTML = renderAdminGuruHariContent(jadwalByHari, jadwalSayaGuruState.activeHari);
+    });
   });
 }
 
@@ -1009,33 +1456,42 @@ function loadAdminGuru() {
 // ══════════════════════════════════════════════════════════════
 
 var adminLogPage = 1;
+var adminLogCache = {}; // in-memory per nomor halaman — lihat staleWhileRevalidate
 
 function viewAdminLog(params) {
   if (params.page) adminLogPage = params.page;
   else adminLogPage = 1;
-  showLoading('Memuat log...');
 
-  API.call('getLog', { page: adminLogPage }, 'GET').then(function(res) {
-    if (!res.ok) { $main.innerHTML = errorBox(res.error); return; }
-    var d = res.data;
+  var reqPage = adminLogPage;
 
-    var html = '<div class="sec-title">Log Aktivitas (' + d.totalItems + ' total)</div>';
+  if (!adminLogCache[reqPage]) $main.innerHTML = skeletonListHtml('Mengambil log aktivitas...');
 
-    if (d.items.length === 0) {
-      html += '<div class="empty"><div class="empty-icon">🕒</div><div class="empty-text">Belum ada log</div></div>';
-    } else {
-      d.items.forEach(function(l) {
-        html += '<div class="admin-list-item"><div>'
-          + '<div class="admin-list-main">' + esc(l.aksi) + ' — ' + esc(l.tabel) + '</div>'
-          + '<div class="admin-list-sub">' + esc(l.keterangan) + '</div>'
-          + '<div class="admin-list-sub">' + esc(l.waktu) + '</div></div></div>';
-      });
-    }
-    html += paginationHtml(d);
+  staleWhileRevalidate(
+    adminLogCache, reqPage,
+    function() { return API.call('getLog', { page: reqPage }, 'GET'); },
+    function(d, updating) { renderAdminLogHtml(d, updating); },
+    function() { return adminLogPage === reqPage; }
+  );
+}
 
-    $main.innerHTML = html;
-    bindPagination(d, function(newPage) { navigate('admin-log', { page: newPage }); });
-  });
+function renderAdminLogHtml(d, updating) {
+  var html = '<div class="sec-title">Log Aktivitas (' + d.totalItems + ' total)</div>';
+  if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
+
+  if (d.items.length === 0) {
+    html += '<div class="empty"><div class="empty-icon">🕒</div><div class="empty-text">Belum ada log</div></div>';
+  } else {
+    d.items.forEach(function(l) {
+      html += '<div class="admin-list-item"><div>'
+        + '<div class="admin-list-main">' + esc(l.aksi) + ' — ' + esc(l.tabel) + '</div>'
+        + '<div class="admin-list-sub">' + esc(l.keterangan) + '</div>'
+        + '<div class="admin-list-sub">' + esc(l.waktu) + '</div></div></div>';
+    });
+  }
+  html += paginationHtml(d);
+
+  $main.innerHTML = html;
+  bindPagination(d, function(newPage) { navigate('admin-log', { page: newPage }); });
 }
 
 // ── Start ────────────────────────────────────────────────────
