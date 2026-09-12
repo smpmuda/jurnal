@@ -102,7 +102,7 @@ function forceSyncData() {
 // Beranda) supaya jelas terlihat dan mudah disentuh di HP.
 function refreshBlockButtonHtml() {
   return '<button class="refresh-block-btn" onclick="forceSyncData()">'
-    + '<span class="icon">↻</span> Perbarui Data</button>';
+    + '<span class="icon" aria-hidden="true"><i class="fa-solid fa-rotate"></i></span> Perbarui Data</button>';
 }
 
 function roleLabel(r) {
@@ -144,23 +144,23 @@ function setupBottomNav() {
   var items = [];
   if (activeRole === 'GURU') {
     items = [
-      { route: 'dashboard',          icon: '📅', label: 'Hari Ini' },
-      { route: 'jurnal-saya',        icon: '📋', label: 'Jurnal Saya' },
-      { route: 'jadwal-saya',        icon: '🗓️', label: 'Jadwal Saya' },
-      { route: 'jadwal-kelas-lihat', icon: '🏫', label: 'Jadwal Kelas' },
+      { route: 'dashboard',          icon: 'fa-solid fa-house',          label: 'Hari Ini' },
+      { route: 'jurnal-saya',        icon: 'fa-solid fa-book-bookmark',  label: 'Jurnal Saya' },
+      { route: 'jadwal-saya',        icon: 'fa-solid fa-calendar-days',  label: 'Jadwal Saya' },
+      { route: 'jadwal-kelas-lihat', icon: 'fa-solid fa-chalkboard',     label: 'Jadwal Kelas' },
     ];
   } else if (activeRole === 'WALI_KELAS') {
     items = [
-      { route: 'jurnal-kelas',       icon: '🏫', label: 'Jurnal Kelas' },
-      { route: 'jadwal-kelas-lihat', icon: '🗓️', label: 'Jadwal Kelas' },
+      { route: 'jurnal-kelas',       icon: 'fa-solid fa-book-open-reader', label: 'Jurnal Kelas' },
+      { route: 'jadwal-kelas-lihat', icon: 'fa-solid fa-chalkboard',       label: 'Jadwal Kelas' },
     ];
   } else if (activeRole === 'ADMIN') {
     items = [
-      { route: 'admin-home',         icon: '⚙️', label: 'Beranda' },
-      { route: 'admin-jurnal',       icon: '📚', label: 'Jurnal' },
-      { route: 'admin-guru',         icon: '👤', label: 'Guru' },
-      { route: 'admin-jadwal-kelas', icon: '🗓️', label: 'Jadwal Kelas' },
-      { route: 'admin-log',          icon: '🕒', label: 'Log' },
+      { route: 'admin-home',         icon: 'fa-solid fa-house',              label: 'Beranda' },
+      { route: 'admin-jurnal',       icon: 'fa-solid fa-user-pen',           label: 'Jurnal Guru' },
+      { route: 'admin-guru',         icon: 'fa-solid fa-user-clock',         label: 'Jadwal Guru' },
+      { route: 'admin-jadwal-kelas', icon: 'fa-solid fa-chalkboard',         label: 'Jadwal Kelas' },
+      { route: 'admin-log',          icon: 'fa-solid fa-clock-rotate-left',  label: 'Log Aktivitas' },
     ];
   }
 
@@ -172,8 +172,9 @@ function setupBottomNav() {
 
   $nav.style.display = 'flex';
   $nav.innerHTML = items.map(function(it) {
-    return '<button class="nav-item" data-route="' + it.route + '">'
-      + '<span class="nav-icon">' + it.icon + '</span>' + it.label + '</button>';
+    return '<button class="nav-item" data-route="' + it.route + '" aria-label="' + esc(it.label) + '">'
+      + '<span class="nav-icon"><i class="' + it.icon + '" aria-hidden="true"></i></span>'
+      + '<span class="nav-label">' + it.label + '</span></button>';
   }).join('');
 
   $nav.querySelectorAll('.nav-item').forEach(function(btn) {
@@ -238,7 +239,7 @@ function navigate(route, params, opts) {
   };
 
   if (routes[route]) routes[route](params);
-  else $main.innerHTML = '<div class="empty"><div class="empty-icon">🚧</div><div class="empty-text">Halaman tidak ditemukan</div></div>';
+  else $main.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="empty-text">Halaman tidak ditemukan</div></div>';
 }
 
 // Tombol "Kembali" di semua form/detail SELALU pakai fungsi ini,
@@ -393,7 +394,7 @@ function renderDashboardHtml(d, updating) {
   html += '<div class="sec-title">Jadwal Mengajar — ' + fmtTanggalIndo(dashTanggal) + '</div>';
 
   if (d.jadwal.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jam pelajaran pada hari ini</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jam pelajaran pada hari ini</div></div>';
   } else {
     d.jadwal.forEach(function(j) {
       html += jadwalCardHtml(j);
@@ -415,7 +416,7 @@ function dateBarHtml(tanggal, route, showJadwalKelasLink) {
     + (isHariIni ? 'Menampilkan data hari ini.' : 'Menampilkan data ' + fmtTanggalIndo(tanggal) + '.')
     + ' Pilih tanggal lain di atas untuk melihat data pada tanggal tersebut.</div>';
   if (showJadwalKelasLink) {
-    html += '<div class="quick-link-row"><a class="quick-link" onclick="navigate(\'jadwal-kelas-lihat\')">🏫 Lihat Jadwal Kelas Lain</a></div>';
+    html += '<div class="quick-link-row"><a class="quick-link" onclick="navigate(\'jadwal-kelas-lihat\')"><i class="fa-solid fa-chalkboard"></i> Lihat Jadwal Kelas Lain</a></div>';
   }
   return html;
 }
@@ -861,32 +862,36 @@ function viewJurnalSaya(params) {
 function renderJurnalSayaHtml(d, updating) {
   var html = '<div class="sec-title">Riwayat Jurnal Saya (' + d.totalItems + ')</div>';
   if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
-  html += '<div class="chip-row" id="filterBulanSaya">';
-  html += '<button type="button" class="chip' + (jurnalSayaBulan === '' ? ' active' : '') + '" data-val="">Semua Bulan</button>';
+  html += '<div class="month-filter">';
+  html += '<button type="button" id="btnSemuaBulan" class="month-filter-all' + (jurnalSayaBulan === '' ? ' active' : '') + '">Semua Bulan</button>';
+  html += '<div class="month-filter-select-wrap"><span class="form-label">Bulan</span><select class="select-input" id="selBulanSaya">';
+  html += '<option value=""' + (jurnalSayaBulan === '' ? ' selected' : '') + '>Pilih bulan</option>';
   for (var b = 1; b <= 12; b++) {
     var bStr = String(b).padStart(2, '0');
-    html += '<button type="button" class="chip' + (bStr === jurnalSayaBulan ? ' active' : '') + '" data-val="' + bStr + '">' + BULAN_NAMA[b] + '</button>';
+    html += '<option value="' + bStr + '"' + (bStr === jurnalSayaBulan ? ' selected' : '') + '>' + BULAN_NAMA[b] + '</option>';
   }
-  html += '</div>';
+  html += '</select></div></div>';
 
   if (d.items.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Belum ada jurnal yang dibuat</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-book-bookmark"></i></div><div class="empty-text">Belum ada jurnal yang dibuat</div></div>';
   } else {
     d.items.forEach(function(j) {
       html += '<div class="admin-list-item" data-id="' + j.jurnal_id + '" style="cursor:pointer">'
         + '<div><div class="admin-list-main">' + esc(j.nama_mapel) + ' — ' + esc(j.nama_kelas) + '</div>'
         + '<div class="admin-list-sub">' + fmtTanggalIndo(j.tanggal) + ' · ' + esc(j.jam_label) + '</div></div>'
-        + '<span class="badge badge-done">✓</span></div>';
+        + '<span class="badge badge-done"><i class="fa-solid fa-check"></i></span></div>';
     });
   }
   html += paginationHtml(d);
 
   $main.innerHTML = html;
-  document.querySelectorAll('#filterBulanSaya .chip').forEach(function(chip) {
-    chip.addEventListener('click', function() {
-      jurnalSayaBulan = chip.dataset.val;
-      navigate('jurnal-saya', { page: 1 });
-    });
+  document.getElementById('btnSemuaBulan').addEventListener('click', function() {
+    jurnalSayaBulan = '';
+    navigate('jurnal-saya', { page: 1 });
+  });
+  document.getElementById('selBulanSaya').addEventListener('change', function(e) {
+    jurnalSayaBulan = e.target.value;
+    navigate('jurnal-saya', { page: 1 });
   });
   document.querySelectorAll('.admin-list-item[data-id]').forEach(function(item) {
     item.addEventListener('click', function() {
@@ -909,7 +914,7 @@ function viewJurnalKelas(params) {
   var kelasId = params.kelas_id || STATE.waliKelasId;
 
   if (!kelasId) {
-    $main.innerHTML = '<div class="empty"><div class="empty-icon">🏫</div><div class="empty-text">Anda belum ditugaskan sebagai wali kelas</div></div>';
+    $main.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-chalkboard"></i></div><div class="empty-text">Anda belum ditugaskan sebagai wali kelas</div></div>';
     return;
   }
   STATE._kelasIdCtx = kelasId;
@@ -932,14 +937,14 @@ function viewJurnalKelas(params) {
 
 function renderJurnalKelasHtml(d, updating) {
   var html = refreshBlockButtonHtml();
-  html += '<div class="wali-info-badge">👤 Wali Kelas: ' + esc(d.nama_kelas) + '</div>';
+  html += '<div class="wali-info-badge"><i class="fa-solid fa-user"></i> Wali Kelas: ' + esc(d.nama_kelas) + '</div>';
   html += dateBarHtml(jurnalKelasTanggal, 'jurnal-kelas', true);
   if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
   html += tidakHadirSummaryHtml(d.mapel);
   html += '<div class="sec-title">Jurnal Kelas · ' + fmtTanggalIndo(jurnalKelasTanggal) + '</div>';
 
   if (d.mapel.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
   } else {
     d.mapel.forEach(function(m) {
       html += mapelCardHtml(m);
@@ -967,7 +972,7 @@ function tidakHadirSummaryHtml(mapelList) {
   if (nisList.length === 0) return '';
 
   var html = '<div class="absent-summary">';
-  html += '<div class="absent-summary-title">😷 Siswa Tidak Hadir Hari Ini (' + nisList.length + ')</div>';
+  html += '<div class="absent-summary-title"><i class="fa-solid fa-user-xmark"></i> Siswa Tidak Hadir Hari Ini (' + nisList.length + ')</div>';
   nisList.forEach(function(nis) {
     var s = map[nis];
     html += '<div class="absent-row"><div class="absent-nama">' + esc(s.nama) + '</div><div class="absent-tags">';
@@ -989,7 +994,7 @@ function mapelCardHtml(m) {
   html += '<div class="jadwal-mapel">' + esc(m.nama_mapel) + '</div>';
   html += '<div class="jadwal-meta">' + esc(m.jam_label) + ' · Guru: ' + esc(m.nama_guru) + '</div>';
   html += '</div>';
-  html += m.sudah_diisi ? '<span class="badge badge-done">✓ Diisi</span>' : '<span class="badge badge-todo">Belum diisi</span>';
+  html += m.sudah_diisi ? '<span class="badge badge-done"><i class="fa-solid fa-check"></i> Diisi</span>' : '<span class="badge badge-todo">Belum diisi</span>';
   html += '</div>';
 
   if (m.sudah_diisi) {
@@ -1112,7 +1117,7 @@ function loadJadwalKelasLihat() {
 
 function renderJadwalLihatHasil($hasil, d) {
   if (d.jadwal.length === 0) {
-    $hasil.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
+    $hasil.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
     return;
   }
   var html = '';
@@ -1137,10 +1142,10 @@ function viewAdminHome(params) {
     + '<div class="admin-list-sub">Admin — akses penuh sistem</div></div></div>';
 
   html += '<div class="sec-title">Menu</div>';
-  html += '<div class="admin-list-item" id="goJurnal" style="cursor:pointer"><div class="admin-list-main">📚 Semua Jurnal</div></div>';
-  html += '<div class="admin-list-item" id="goGuru" style="cursor:pointer"><div class="admin-list-main">👤 Jadwal per Guru</div></div>';
-  html += '<div class="admin-list-item" id="goJadwalKelas" style="cursor:pointer"><div class="admin-list-main">🗓️ Jadwal Kelas</div></div>';
-  html += '<div class="admin-list-item" id="goLog" style="cursor:pointer"><div class="admin-list-main">🕒 Log Aktivitas</div></div>';
+  html += '<div class="admin-list-item" id="goJurnal" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-user-pen"></i> Jurnal Guru</div></div>';
+  html += '<div class="admin-list-item" id="goGuru" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-user-clock"></i> Jadwal Guru</div></div>';
+  html += '<div class="admin-list-item" id="goJadwalKelas" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-chalkboard"></i> Jadwal Kelas</div></div>';
+  html += '<div class="admin-list-item" id="goLog" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-clock-rotate-left"></i> Log Aktivitas</div></div>';
 
   html += '<div class="sec-title">Catatan</div>';
   html += '<div class="admin-list-item"><div class="admin-list-sub" style="line-height:1.6">'
@@ -1241,7 +1246,7 @@ function loadAdminJurnal() {
 
     var html = '<div class="sec-title">Hasil (' + d.totalItems + ')</div>';
     if (d.items.length === 0) {
-      html += '<div class="empty"><div class="empty-icon">📚</div><div class="empty-text">Tidak ada jurnal untuk filter ini</div></div>';
+      html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jurnal untuk filter ini</div></div>';
     } else {
       d.items.forEach(function(j) {
         html += '<div class="admin-list-item" data-id="' + j.jurnal_id + '" style="cursor:pointer">'
@@ -1392,7 +1397,7 @@ var jadwalSayaGuruCache = null; // hasil getJadwalPerGuru milik sendiri, dipakai
 
 function viewJadwalSayaGuru(params) {
   if (!session.guru_id) {
-    $main.innerHTML = '<div class="empty"><div class="empty-icon">👤</div><div class="empty-text">Akun ini belum terhubung ke data guru</div></div>';
+    $main.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-user-slash"></i></div><div class="empty-text">Akun ini belum terhubung ke data guru</div></div>';
     return;
   }
 
@@ -1479,7 +1484,7 @@ function renderAdminLogHtml(d, updating) {
   if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
 
   if (d.items.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">🕒</div><div class="empty-text">Belum ada log</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-clock-rotate-left"></i></div><div class="empty-text">Belum ada log</div></div>';
   } else {
     d.items.forEach(function(l) {
       html += '<div class="admin-list-item"><div>'
