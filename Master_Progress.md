@@ -1,6 +1,6 @@
 # Master Progress — Jurnal Mengajar
 **SMP Muhammadiyah 2 Cilacap**
-Terakhir diperbarui: 2026-09-12 (lanjutan)
+Terakhir diperbarui: 2026-09-18
 
 ---
 
@@ -483,6 +483,609 @@ Semua `.gs` (tidak diubah, tetap dicek ulang), `app.js` lolos `node --check`.
 `app.html`, `jadwal-publik.html`, `index.html`, `login.html` lolos cek
 balance div. Tidak ada nama fungsi/variabel top-level yang bentrok
 (dicek otomatis).
+
+### 2026-09-12 (lanjutan lagi, laporan bug produksi setelah deploy pertama)
+
+Setelah deploy pertama ke produksi, user melaporkan beberapa masalah. Hasil
+triase:
+
+**Bug backend ditemukan & diperbaiki (izin eksplisit diminta & diberikan
+sebelum edit `apps-script/Auth.gs`):** respons `actionLogin()` TIDAK PERNAH
+mengirim `guru_id` ke frontend (field itu ada di objek session server,
+tapi tidak diteruskan lewat `ok({...})` yang dikembalikan ke client).
+Akibatnya `session.guru_id` di browser SELALU kosong untuk siapapun,
+termasuk guru asli — jadi menu baru "Jadwal Saya" (yang butuh
+`session.guru_id`) selalu menampilkan "Akun ini belum terhubung ke data
+guru" walau akunnya benar guru. Ini bug lama yang baru ketahuan karena
+fitur "Jadwal Saya" pertama kali memakai field tersebut di frontend.
+**Fix**: tambah satu baris `guru_id: sessionData.guru_id` di objek yang
+dikembalikan `actionLogin()`. Frontend tidak perlu diubah — `login.html`
+sudah menyimpan seluruh `res.data` apa adanya via `Auth.saveSession()`.
+
+**Dugaan penyebab utama gejala lain (BELUM dikonfirmasi, perlu dicek user
+langsung di Apps Script/GitHub, di luar kendali Claude):**
+- "Koneksi gagal" acak (login kadang gagal kadang berhasil, halaman
+  publik Jadwal Kelas ikut gagal padahal tidak butuh login) → dugaan kuat
+  setting **"Who has access" pada deployment Web App bukan lagi "Anyone"**
+  (mis. ke-reset ke "Anyone with Google account" saat redeploy, atau user
+  membuat "New deployment" baru sehingga URL `/exec` berubah tapi
+  `config.js` di GitHub Pages masih menunjuk ke URL lama). Halaman publik
+  yang ikut gagal adalah sinyal paling kuat karena harusnya SELALU
+  berhasil tanpa syarat apapun kalau setting benar.
+- "Tampilan sama sekali tidak berubah" + chip filter Jurnal Saya
+  "tertutup"/tidak rapi → dugaan kuat **`frontend/app.html` (berisi semua
+  CSS baru) belum ke-upload ulang ke GitHub Pages**, hanya `js/app.js`
+  yang ter-update. Tanpa CSS baru, elemen `.chip`/`.filter-card` baru
+  cuma jadi tombol polos tak berstyle.
+
+User diminta mengecek langsung: (1) setting "Who has access" = Anyone,
+(2) URL exec di Apps Script cocok dengan `CONFIG.API_URL` di
+`config.js`, (3) tes `?action=ping` langsung di browser incognito, (4)
+pastikan `app.html` ikut ter-upload (cek ada string `filter-card` di
+file yang live). Hasil pengecekan ini akan menentukan langkah
+selanjutnya — BELUM ada perubahan kode lain di sesi ini untuk item-item
+ini karena butuh info dari sisi deployment user.
+
+**Redesign visual dashboard (terinspirasi contoh HTML "Kas Kelas" yang
+di-upload user) — DITUNDA** sampai isu koneksi & deployment di atas
+terkonfirmasi beres, supaya tidak menambah variabel baru di atas
+deployment yang masih bermasalah.
+
+File yang diubah sesi ini: `apps-script/Auth.gs` (1 baris, dengan izin
+eksplisit). Tidak ada perubahan `frontend/*`.
+
+**Fix kritis kedua (frontend, tidak perlu izin karena bukan backend):**
+User mengonfirmasi `/lab/` dan `/jurnal/` di-hosting di
+`smpmuda.github.io/lab` dan `smpmuda.github.io/jurnal` — **origin yang
+SAMA** (`smpmuda.github.io`), cuma beda path. Browser menyimpan
+`sessionStorage`/`localStorage` PER ORIGIN, bukan per path — jadi kalau
+kedua deployment ini pernah dibuka di browser/tab yang sama, dan
+memakai nama key storage yang identik (`jm_session`, `jm_cache_*`,
+peninggalan dari `/lab/` sebagai versi awal codebase yang sama), token
+login & cache master data dari satu deployment bisa "kebaca" oleh
+deployment lain. Ini match persis dengan pola bug yang dilaporkan (login
+gagal-berhasil-berhasil-gagal acak; data "sebagian muncul").
+
+**Fix**: `CONFIG.STORAGE_NS` baru di `config.js` — namespace otomatis
+diturunkan dari segmen pertama `window.location.pathname` (jadi `"lab"`
+di `/lab/...`, `"jurnal"` di `/jurnal/...`, otomatis ikut folder deploy
+mana pun, tidak perlu diseting manual). Dipakai di:
+- `auth.js`: `Auth.KEY` jadi `'jm_session_' + CONFIG.STORAGE_NS`
+- `cache.js`: `LS_PREFIX`/`LS_VERSION_KEY` disisipi namespace yang sama
+
+**Konsekuensi yang perlu diketahui user**: setelah fix ini di-deploy,
+SEMUA sesi login yang sedang aktif (key lama `jm_session` tanpa
+namespace) otomatis "hilang" dari sudut pandang app — bukan error, app
+akan minta login ulang seperti biasa (tidak ada crash). Ini normal &
+sekali saja.
+
+**Catatan untuk masa depan**: `/lab/` dan `/jurnal/` boleh terus dipakai
+sebagai strategi fallback, TAPI karena origin-nya sama, sebaiknya jangan
+dites di tab/profil browser yang sama secara bersamaan — pakai window
+mode Incognito terpisah kalau perlu buka keduanya sekaligus untuk
+membandingkan, supaya tidak membingungkan diri sendiri saat debugging
+meskipun fix namespace ini sudah menghilangkan risiko datanya bocor.
+
+File yang diubah: `frontend/js/config.js`, `frontend/js/auth.js`,
+`frontend/js/cache.js`. Tidak ada perubahan `apps-script/*.gs` di
+bagian ini.
+
+### 2026-09-13 — Redesign visual "Modern SaaS" (port dari prototype yang direview user)
+
+User mengunggah `prototype-dashboard.html` (sandbox visual berisi struktur
+HTML/class yang identik dengan render asli app.js, dengan data contoh —
+tidak memanggil API), lalu setelah beberapa putaran review sendiri,
+mengunggah versi final `Jurnal_Mengajar_SaaS_Redesign.html` untuk di-port
+ke produksi. Perubahan yang diminta & dikerjakan:
+
+**1. Ikon Font Awesome (bottom nav & elemen terkait)** — sebelumnya emoji
+(📅📋🗓️🏫 dst), diganti Font Awesome Solid (`fa-solid`) via CDN
+(`cdnjs.cloudflare.com/.../font-awesome/6.5.2`), lebih besar & tegas:
+- Guru: Hari Ini→`fa-house`, Jurnal Saya→`fa-book-bookmark`, Jadwal
+  Saya→`fa-calendar-days`, Jadwal Kelas→`fa-chalkboard`
+- Wali Kelas: Jurnal Kelas→`fa-book-open-reader`, Jadwal Kelas→`fa-chalkboard`
+- Admin: Beranda→`fa-house`, Jurnal Guru→`fa-user-pen`, Jadwal
+  Guru→`fa-user-clock`, Jadwal Kelas→`fa-chalkboard`, Log
+  Aktivitas→`fa-clock-rotate-left`
+Label admin disamakan dengan bottom nav ("Semua Jurnal"→"Jurnal Guru",
+"Guru"→"Jadwal Guru", "Log"→"Log Aktivitas") — termasuk di menu Beranda
+Admin (`viewAdminHome`) supaya konsisten dengan bottom nav. Emoji lain
+(empty-state, badge centang, wali-info-badge, absent-summary) ikut
+diganti FA supaya seragam satu sistem ikon di seluruh app.
+
+**2. Fix animasi tombol sync/refresh** — sebelumnya `.topbar-sync.syncing`
+menganimasikan SELURUH tombol kotak (bukan cuma ikon), bikin kotaknya
+ikut berputar. Diperbaiki: animasi `syncspin` sekarang HANYA pada elemen
+ikon (`.sync-icon` di topbar, `.icon` di `refresh-block-btn`), sementara
+tombolnya sendiri diberi `transform: none !important` saat `.syncing`
+supaya benar-benar diam. Markup ikon diganti dari teks emoji polos jadi
+`<i class="fa-solid fa-rotate sync-icon">` / `<i class="fa-solid
+fa-rotate">` supaya bisa ditarget CSS secara terpisah dari kotak tombol.
+
+**3. Jurnal Saya: chip 12 bulan → tombol "Semua Bulan" + 1 dropdown** —
+deretan chip Januari–Desember sebelumnya bikin bulan-bulan akhir (mis.
+Desember) susah dijangkau di layar HP sempit (perlu geser jauh, kadang
+tidak kelihatan tergeser ke luar viewport). Diganti pola baru:
+`.month-filter` (grid 2 kolom) berisi tombol "Semua Bulan" (fungsi sama
+seperti chip "Semua Bulan" sebelumnya) + satu `<select>` dropdown berisi
+Januari–Desember. Semua 12 bulan sekarang selalu bisa dipilih tanpa
+geser apapun, dan lebih ringkas secara layout.
+
+**4. Font & desain token "Modern SaaS"** — seluruh isi `<style>` di
+`frontend/app.html` diganti dengan versi dari prototype yang sudah
+direview user (37KB, naik dari 20KB sebelumnya): menambahkan layer token
+desain baru (`--surface`, `--text`, `--border`, `--brand`, `--r-*`,
+`--shadow-xs/sm`, dst.) yang meng-override sebagian gaya lama (topbar,
+bottom-nav, refresh-block-btn, dll.) dengan tampilan lebih halus/rapi,
+sekaligus menambahkan Google Font "Plus Jakarta Sans" yang sebelumnya
+sudah direferensikan lewat CSS variable `--font` tapi TIDAK PERNAH
+benar-benar dimuat (font fallback ke system font selama ini — bug lama
+yang baru ketahuan & ikut diperbaiki). Sebelum porting, seluruh selector
+CSS produksi lama dicek: 0 selector yang hilang di versi baru (versi baru
+strict superset, 145 vs 117 selector) — aman untuk diganti seutuhnya.
+
+File yang diubah: `frontend/app.html` (head + seluruh `<style>`),
+`frontend/js/app.js` (`setupBottomNav`, `refreshBlockButtonHtml`,
+`renderJurnalSayaHtml`, `viewAdminHome`, beberapa empty-state & badge).
+Tidak ada perubahan `apps-script/*.gs`, tidak ada perubahan struktur
+data/route — murni tampilan. Semua `.gs`/`.js` lolos `node --check`,
+`app.html` lolos cek balance div & CSS brace (0/0).
+
+### 2026-09-13 (lanjutan) — Bug "Akses ditolak" di Jadwal Saya (Guru non-Admin)
+
+Setelah fix `guru_id` di sesi login berhasil, ditemukan bug lanjutan:
+guru yang TIDAK punya role ADMIN (mis. GURU,WALI_KELAS) mendapat "Akses
+ditolak" saat membuka "Jadwal Saya", sementara guru yang KEBETULAN juga
+ADMIN bisa buka normal. Root cause: `actionGetJadwalPerGuru` (Data.gs)
+awalnya HANYA dipakai oleh Admin ("Jadwal Guru"), jadi diberi pengecekan
+`if (!hasRole(session, ['ADMIN'])) return err('Akses ditolak', 403);`.
+Saat fitur "Jadwal Saya" (Guru) dibuat, fungsi backend yang sama dipakai
+ulang tapi pengecekan aksesnya lupa dilonggarkan.
+
+Gejala tambahan yang sempat membingungkan: guru non-admin kadang tetap
+BISA lihat jadwalnya kalau device yang sama baru saja dipakai admin
+login — itu karena hasil `getJadwalPerGuru` di-cache di `localStorage`
+(cache master data per `cachedApiCall`), yang shared per-browser/device,
+bukan per-akun. Jadi yang kelihatan "berhasil" itu sebenarnya cache lama
+milik sesi admin sebelumnya, bukan izin akses guru itu sendiri.
+
+**Fix** (izin eksplisit diminta & diberikan sebelum edit
+`apps-script/Data.gs`): pengecekan akses diubah jadi mengizinkan (a)
+role ADMIN untuk melihat jadwal guru manapun (perilaku lama
+dipertahankan), ATAU (b) siapapun yang login melihat jadwalnya SENDIRI
+(`session.guru_id === params.guru_id`) — dipakai khusus menu "Jadwal
+Saya". `session.guru_id` sudah tersedia di server sejak login (disimpan
+di token store), terlepas dari apakah field itu dikirim ke frontend atau
+tidak.
+
+File yang diubah: `apps-script/Data.gs` (1 fungsi, `actionGetJadwalPerGuru`).
+
+### 2026-09-13 (root cause fix) — Bug massal "aktif" BOOLEAN vs STRING
+
+User mengunggah file Excel berisi seluruh database produksi (`JurnalMengajar_v3__2_.xlsx`).
+Pengecekan langsung ke data (bukan cuma baca kode) mengonfirmasi dugaan
+user 100%: **kolom `aktif` di SEMUA sheet (03_USER, 04_GURU, 06_SISWA,
+07_MAPEL, 08_JAM, 09_JADWAL, 01_CONFIG) berisi BOOLEAN asli `TRUE`
+(checkbox Google Sheets), bukan teks `"TRUE"`.** Kode lama di 18 titik
+tersebar di `Auth.gs`, `Data.gs`, `Jurnal.gs`, `Utils.gs` memakai pola
+`String(x.aktif) === 'TRUE'` — ini SELALU `false` untuk boolean asli,
+karena `String(true)` di JavaScript menghasilkan `"true"` huruf kecil,
+bukan `"TRUE"`. Akibatnya HAMPIR SEMUA baris di HAMPIR SEMUA sheet
+tersaring habis dari hasil manapun yang memfilter `aktif` — inilah
+penyebab tunggal di balik hampir semua gejala yang dilaporkan user:
+jadwal publik kosong, Jadwal Saya kosong, Jadwal Kelas kosong, daftar
+guru kosong di filter Admin, "guru_id wajib" muncul walau data benar,
+kemungkinan besar juga sebagian kegagalan login acak sebelumnya.
+
+**Fix**: helper baru `isAktif(val)` di `Utils.gs` — menerima BOOLEAN asli
+maupun teks `"TRUE"` (case-insensitive, whitespace ditoleransi). Semua 18
+titik `=== 'TRUE'` yang rapuh di `Auth.gs` (1), `Data.gs` (10), `Jurnal.gs`
+(6), `Utils.gs` (1, di dalam `getGuruAktifList`-style filter) diganti jadi
+`isAktif(...)`. Ini mencakup: login, daftar guru, semua jenis jadwal
+(guru/kelas/publik/hari-ini), daftar siswa aktif, daftar mapel, daftar
+jam, dan izin-edit-jurnal (`IZIN_EDIT_JURNAL`). **User TIDAK PERLU
+mengubah data spreadsheet-nya** — checkbox boolean sekarang didukung
+langsung oleh kode.
+
+**Ditemukan sekaligus, PERLU DIPERBAIKI USER DI SPREADSHEET (bukan lewat
+kode):**
+- `04_GURU` baris **G004 (SITI SUNDARI, S.Pd., M.Pd)**: kolom `aktif`
+  berisi teks `"AKTIF"` (bukan `TRUE`/checkbox) — nilai salah/typo, TIDAK
+  akan dikenali `isAktif()` sebagai aktif (dan memang seharusnya tidak,
+  karena ini bukan representasi valid apapun). Perlu diubah manual jadi
+  `TRUE` atau dicentang sebagai checkbox.
+- `04_GURU` baris **G039–G042**: `guru_id` terisi tapi `nama` & `aktif`
+  kosong (NaN) — sisa baris template kosong, kemungkinan tidak berbahaya
+  tapi sebaiknya dihapus atau diisi supaya tidak membingungkan di masa
+  depan.
+
+**Dikonfirmasi BUKAN masalah** (sempat diduga sebelumnya): format kolom
+`hari` di `09_JADWAL` — semua nilai sudah konsisten uppercase
+(SENIN/SELASA/RABU/KAMIS/JUMAT), tidak ada masalah case-sensitivity di
+data user ini. Nilai `JAM_MAKS_SENIN/SELASA/RABU/KAMIS/JUMAT/SABTU` di
+`01_CONFIG` juga sudah benar (10/10/10/9/5/0) sesuai jadwal riil sekolah
+— fallback default di kode (9/9/9/8/4/0) tidak pernah kepakai karena nilai
+sheet sudah terisi.
+
+File yang diubah: `apps-script/Utils.gs` (tambah fungsi `isAktif`),
+`apps-script/Auth.gs`, `apps-script/Data.gs`, `apps-script/Jurnal.gs`
+(ganti semua `=== 'TRUE'` jadi `isAktif(...)`). Tidak ada perubahan
+`frontend/*` di sesi ini. Semua `.gs` lolos `node --check`.
+
+**STATUS: bug lain yang dilaporkan user dalam pesan yang sama (login
+lambat/gagal beberapa kali, UI Jurnal Saya belum sempat divalidasi bisa
+buat jurnal, dll.) BELUM SEMPAT dianalisis satu-satu** — kemungkinan
+besar sebagian besar akan ikut hilang begitu fix `isAktif()` di-deploy
+(karena login-gagal-acak & filter-kosong sangat mungkin gejala yang sama),
+tapi ini PERLU DIVERIFIKASI ULANG oleh user setelah deploy, bukan
+diasumsikan otomatis beres. Lanjutan analisis (kalau masih ada bug
+tersisa setelah deploy fix ini) dilakukan di chat baru — lihat
+`MASTER_CONTEXT_HANDOFF.md` untuk resume lengkap.
+
+### 2026-09-15 — Bug sisa `isAktif` di edit-jurnal + Fitur Export Rekap Jurnal Mingguan (PDF)
+
+**Konteks:** lanjutan chat baru dari `MASTER_CONTEXT_HANDOFF.md` (isAktifFix
+13 Sept). User minta: (1) periksa & perbaiki bug tanpa merusak fitur
+berjalan, (2) tambah fitur Export Rekap Jurnal Mingguan ke PDF untuk 2
+jenis jurnal (Jurnal Kelas & Jurnal Guru), pakai library yang sesuai
+stack yang ada.
+
+**Bug ditemukan (root cause sama dengan fix 13 Sept, sisa 1 titik
+terlewat):** `apps-script/Jurnal.gs`, fungsi `actionUpdateJurnal`
+(~baris 190), masih memakai pola lama `String(configVal('IZIN_EDIT_JURNAL'))
+!== 'TRUE'` untuk cek apakah fitur edit jurnal aktif. Persis seperti bug
+`aktif` yang sudah diperbaiki 13 Sept: kalau admin mengisi
+`IZIN_EDIT_JURNAL` di `01_CONFIG` sebagai checkbox boolean asli (bukan
+teks `"TRUE"`), perbandingan ini SELALU `true` (dianggap "bukan TRUE"),
+sehingga **semua guru non-admin diblokir edit jurnal** dengan pesan
+"Fitur edit jurnal sedang dinonaktifkan oleh admin" — walau admin sudah
+mengaktifkannya lewat checkbox. 3 titik lain di kode yang sama (baris
+~292, ~378) dan di `Data.gs` (`actionGetConfig`) sudah benar pakai
+`isAktif()` — titik ini terlewat saat migrasi sebelumnya karena
+polanya sedikit beda (`!==` bukan `===`, jadi tidak ketemu waktu grep
+manual sebelumnya).
+
+**Fix:** diganti jadi `if (!isAktif(configVal('IZIN_EDIT_JURNAL')))`.
+Sudah konsisten dengan 3 titik lain. File yang diubah: `apps-script/Jurnal.gs`
+(1 fungsi). Tidak ada perubahan sheet/data yang diperlukan dari user.
+
+**Fitur baru: Export Rekap Jurnal Mingguan → PDF**
+
+*Backend (2 endpoint baru, read-only, tidak mengubah endpoint lama):*
+- `actionGetRekapJurnalGuru(params, session)` — semua sesi jurnal SATU
+  guru dalam rentang tanggal (dipakai untuk "Jurnal Guru"). Guru biasa
+  hanya bisa lihat miliknya sendiri (sama seperti `getJurnalSaya`);
+  Admin bisa pilih `guru_id` guru manapun.
+- `actionGetRekapJurnalKelas(params, session)` — semua sesi jurnal SATU
+  kelas dalam rentang tanggal (dipakai untuk "Jurnal Kelas"). Wali kelas
+  hanya bisa lihat kelasnya sendiri (sama seperti `getJadwalKelas`);
+  Admin bisa pilih `kelas_id` kelas manapun.
+- Keduanya: filter ketat `tahun_id` = TAHUN_AKTIF, `status !== 'DELETED'`,
+  `tanggal` di antara `tanggal_mulai`–`tanggal_selesai` (inklusif),
+  rentang dibatasi `REKAP_MAX_HARI = 31` hari per request (fitur ini
+  untuk rekap MINGGUAN, jadi batas ini jauh dari mengganggu, tapi
+  mencegah 1 request menarik seluruh riwayat jurnal setahun sekaligus).
+  Tidak menyentuh/mengganti endpoint yang sudah ada (`getJurnalSaya`,
+  `getAllJurnal`, `getJadwalKelas` semuanya TETAP seperti sebelumnya).
+- Didaftarkan di `Code.gs` router: `getRekapJurnalGuru`, `getRekapJurnalKelas`.
+
+*Frontend (jsPDF + jsPDF-AutoTable via CDN — belum ada library PDF
+sebelumnya di proyek ini, jsPDF dipilih karena murni client-side, cocok
+untuk SPA statis GitHub Pages tanpa perlu endpoint backend baru khusus
+generate file):*
+- `frontend/app.html`: tambah 2 tag `<script>` CDN (cdnjs, sama seperti
+  Font Awesome) untuk `jspdf@2.5.1` dan `jspdf-autotable@3.8.2`.
+- `frontend/js/app.js`: tambah section baru "Export Rekap Jurnal
+  Mingguan → PDF" (helper tanggal minggu Senin–Sabtu, kartu UI pilih
+  minggu generik `exportPdfCardHtml`/`bindExportPdfCard`, dan 2 fungsi
+  pembangun PDF `buildRekapPdfGuru`/`buildRekapPdfKelas` — landscape A4,
+  tabel auto page-break dari AutoTable, nomor halaman & tanggal cetak di
+  footer tiap halaman, header ringkas di halaman lanjutan).
+- Tombol **"Export PDF"** dipasang di 3 tempat sesuai peran (tidak
+  membuat halaman/menu baru — dipasang di menu yang SUDAH ADA):
+  1. **Jurnal Saya** (Guru) — `renderJurnalSayaHtml`, ekspor jurnal guru
+     yang login, minggu dipilih lewat 1 input tanggal (otomatis
+     "dibulatkan" ke Senin minggu itu, periode ditampilkan Senin–Sabtu).
+  2. **Jurnal Kelas** (Wali Kelas) — `renderJurnalKelasHtml`, ekspor
+     jurnal kelas yang diampu wali kelas tsb.
+  3. **Admin → Jurnal Guru** — `viewAdminJurnal`/`bindExportAdminCard`,
+     panel terpisah dengan pilihan jenis (Jurnal Guru/Jurnal Kelas) +
+     dropdown target (guru manapun/kelas manapun, pakai data yang sudah
+     dimuat di halaman itu) + minggu.
+- Nama file otomatis informatif: `Rekap-Jurnal-Guru-Minggu-2026-09-14.pdf`
+  / `Rekap-Jurnal-Kelas-Minggu-2026-09-14.pdf` (tanggal = Senin minggu
+  yang diekspor).
+
+*Test:* `apps-script/TestSuite.gs` — fungsi baru `testRekapJurnalMingguan`
+(dipanggil dari `runFullTest()`), memvalidasi: endpoint menemukan jurnal
+test yang dibuat `testCreateDanUpdateJurnal` (tanggal `2099-01-01`),
+rentang tanggal terbalik ditolak, rentang >31 hari ditolak, dan
+`getRekapJurnalKelas` ditolak jelas untuk guru yang bukan wali kelas
+tanpa `kelas_id`.
+
+**Status:** semua file (`.gs` & `.js`) lolos `node --check`, `app.html`
+lolos cek balance div (11/11) & brace CSS (304/304). **BELUM dites oleh
+user di Apps Script + browser sungguhan** — lihat `Panduan_Deploy_dan_Uji.md`
+(bagian baru) untuk langkah upload & uji manual.
+
+File yang diubah/ditambah sesi ini: `apps-script/Jurnal.gs` (fix bug +
+2 endpoint baru), `apps-script/Code.gs` (2 baris router), `apps-script/TestSuite.gs`
+(1 fungsi test baru + 1 baris pemanggilan), `frontend/app.html` (2 tag
+script CDN), `frontend/js/app.js` (section baru + panggilan di 3 fungsi
+render yang sudah ada). **Tidak ada file yang dihapus, tidak ada
+struktur/fitur lama yang diubah perilakunya** — murni tambahan.
+
+### 2026-09-16 — Fitur baru: Generate Prompt AI dari data jurnal (pelengkap Export PDF)
+
+**Ide dari user:** selain Export PDF, tambahkan tombol yang menyusun data
+jurnal (materi, kegiatan, kehadiran, catatan) menjadi **teks prompt AI**
+siap-pakai — guru tinggal salin & tempel ke Gemini/ChatGPT/AI lain untuk
+diolah jadi laporan pembelajaran, refleksi, evaluasi, dll sesuai
+kebutuhan. Aplikasi jadi "jembatan" data → AI, tidak perlu bikin
+generator dokumen sendiri di dalam aplikasi.
+
+**Tidak ada endpoint backend baru** — fitur ini murni memakai ulang 2
+endpoint yang sudah dibuat sesi 15 Sept (`getRekapJurnalGuru`,
+`getRekapJurnalKelas`), cuma diolah jadi teks prompt di frontend alih-alih
+PDF. `apps-script/*.gs` **TIDAK ADA PERUBAHAN SAMA SEKALI** sesi ini.
+
+**Frontend (`frontend/js/app.js`):**
+- Kartu export (`exportPdfCardHtml`) sekarang punya 2 tombol: **Export
+  PDF** (lama) + **Salin Prompt AI** (baru), keduanya independen (klik
+  satu tidak menonaktifkan yang lain), berbagi periode minggu yang sama.
+- `bindExportPdfCard` diubah signature-nya dari `(idPrefix, onGenerate)`
+  jadi `(idPrefix, {pdf, prompt})` — 2 handler terpisah. Semua 3 tempat
+  pemanggil (Jurnal Saya, Jurnal Kelas, Admin→Jurnal Guru) sudah
+  disesuaikan.
+- Fungsi baru: `buildPromptJurnalGuru(data)` / `buildPromptJurnalKelas(data)`
+  — menyusun teks prompt terstruktur: instruksi tegas ke AI ("jangan
+  mengarang fakta yang tidak ada di data", format naratif bukan tabel
+  mentah) + tugas spesifik (ringkasan kegiatan, perkembangan siswa,
+  kendala, rekomendasi) + data mentah tiap sesi (tanggal, jam, kelas/mapel,
+  ringkasan, catatan, kehadiran, siswa tidak hadir) dibungkus penanda
+  `==== DATA JURNAL ====` yang jelas. Instruksi baku digabung di 1
+  variabel (`PROMPT_AI_ATURAN`) supaya gampang disempurnakan tanpa ubah
+  2 tempat.
+- `salinKeClipboard(teks)` — coba `navigator.clipboard.writeText`, kalau
+  berhasil toast sukses, kalau gagal/tidak didukung browser tetap
+  fallback ke kotak teks manual.
+- `tampilkanPromptBox(idPrefix, teks)` — render `<textarea readonly>`
+  berisi prompt lengkap (dibuat lewat DOM `createElement`+`.value`,
+  BUKAN string HTML, supaya kalau ringkasan/catatan guru kebetulan
+  mengandung teks aneh seperti `</textarea>` tidak bisa merusak
+  tampilan) + tombol "Salin Lagi", auto-select supaya guru tinggal
+  Ctrl+C kalau clipboard API diblokir browser.
+- Panel Admin (`bindExportAdminCard`) juga dapat tombol kedua, dengan
+  fetch data digabung 1 fungsi (`ambilRekapTerpilih`) dipakai ulang oleh
+  tombol PDF maupun Prompt supaya tidak duplikasi logic.
+
+**Status:** lolos `node --check`, div/brace `app.html` tetap balance
+(fitur ini tidak menambah/mengubah HTML statis, semua dirender lewat JS).
+**Belum dites di browser sungguhan.** Test manual: buka Jurnal Saya/Jurnal
+Kelas/Admin→Jurnal Guru → klik **Salin Prompt AI** → cek toast sukses +
+kotak teks muncul berisi data yang benar → coba tempel ke Gemini/ChatGPT
+beneran dan lihat apakah hasilnya masuk akal.
+
+File yang diubah sesi ini: **hanya** `frontend/js/app.js`. Tidak ada file
+lain yang disentuh.
+
+### 2026-09-17 — Fix bug NIS/nama + redesain PDF (kartu per-hari) + fix 4 test palsu
+
+**Laporan user setelah deploy & test manual:**
+1. Hasil `runFullTest()` di Apps Script: 4 ❌ FAIL (`JAM_MAKS_SENIN = 9`,
+   `JAM_MAKS_JUMAT = 4`, `createJurnal berhasil`, `getJadwalPerGuru DITOLAK
+   untuk guru biasa`).
+2. Uji manual aplikasi: **berjalan cukup baik**, KECUALI hasil Export PDF
+   tidak menampilkan nama siswa yang tidak hadir — hanya NIS. Harusnya ADA
+   nis DAN nama. User juga minta versi PDF dibuat lebih rapi, dan
+   mengupload contoh HTML dashboard (`rekap_jurnal_mingguan_sub_dashboard.html`)
+   sebagai inspirasi tampilan (kartu per sesi dikelompokkan per hari, KPI
+   strip, badge kehadiran berwarna) — **diminta tetap sederhana datanya,
+   tidak banyak mengubah backend**.
+
+**Diagnosis 4 test FAIL — SEMUA ternyata test yang keliru, BUKAN bug aplikasi:**
+- `JAM_MAKS_SENIN = 9` / `JAM_MAKS_JUMAT = 4`: assertion hardcode nilai
+  contoh dari data dummy sesi awal pengembangan. Di spreadsheet produksi
+  sekolah nyata, nilai ini WAJAR beda. Diperbaiki jadi validasi wajar
+  (angka 1–12), bukan nilai hardcode.
+- `createJurnal berhasil` gagal: test membuat jurnal test di tanggal
+  hardcode `2099-01-01`; kalau `runFullTest()` dijalankan 2x tanpa hapus
+  manual baris test sebelumnya, tanggal itu "sudah terpakai" dan sistem
+  (BENAR) menolaknya sebagai duplikat. Bukan bug — justru bukti fitur
+  cegah-duplikat bekerja. Diperbaiki: fungsi baru `_cariTanggalTestBebas()`
+  mencari tanggal 2099 kosong secara otomatis, jadi test bisa diulang
+  berkali-kali tanpa perlu bersih-bersih manual.
+- `getJadwalPerGuru DITOLAK untuk guru biasa` gagal: test ini justru
+  **ketinggalan zaman** — dari sesi lampau, `actionGetJadwalPerGuru`
+  (Data.gs) SUDAH SENGAJA diubah mengizinkan guru melihat jadwalnya
+  SENDIRI (dipakai menu "Jadwal Saya"), tapi assertion test masih
+  mengasumsikan versi lama (admin-only). Diperbaiki: assertion sekarang
+  cek akses-diri-sendiri HARUS berhasil, akses ke guru LAIN (bukan admin)
+  HARUS ditolak.
+- File yang diubah: `apps-script/TestSuite.gs` (4 assertion + 1 fungsi
+  helper baru). Tidak ada perubahan pada action/endpoint yang DITES.
+
+**Bug nyata ditemukan & diperbaiki — nama siswa tidak hadir hilang di
+rekap (PDF & prompt AI):**
+- **Penyebab:** NIS di sheet `12_KEHADIRAN` vs `06_SISWA` bisa tersimpan
+  beda tipe di Google Sheets (angka murni vs teks dengan leading zero,
+  mis. `7821` vs `"007821"`) tergantung cara data dientri. Kode lookup
+  nama (`_rekapKehadiranSatuJurnal` di `Jurnal.gs`, dibuat sesi 15 Sept)
+  cuma pakai `String(nis)` polos untuk mencocokkan — tidak cukup kalau
+  formatnya beda, jadi jatuh ke fallback "tampilkan NIS saja".
+- **Perbaikan:** fungsi baru `_nisKey()` menormalkan NIS (buang leading
+  zero) sebelum dibandingkan, dipakai lewat `_indexSiswaByNis()` — HANYA
+  di 2 fungsi rekap PDF (`actionGetRekapJurnalGuru`/`actionGetRekapJurnalKelas`),
+  tidak menyentuh fungsi jurnal harian lain yang sudah berjalan.
+- **Tambahan field respons (aditif, tidak mengubah field lama):**
+  `tidak_hadir_detail` — array terstruktur `{nis, nama, status, keterangan}`
+  per siswa, di samping `tidak_hadir_label` (string gabungan) yang tetap
+  dipertahankan untuk kompatibilitas. Sesuai permintaan user, sekarang NIS
+  DAN nama tampil bersamaan, bukan salah satu saja.
+- File yang diubah: `apps-script/Jurnal.gs` saja.
+
+**Redesain tampilan PDF (terinspirasi HTML yang diupload user) — TANPA
+perubahan backend tambahan, murni olah ulang field yang sudah ada:**
+- Sebelumnya: 1 tabel panjang (jsPDF-AutoTable) menampung semua sesi.
+- Sekarang: kartu per sesi dikelompokkan per hari (band gelap "SENIN ·
+  14 Sep 2026 · 5 sesi"), tiap kartu punya chip Jam/Kelas-Guru/Mapel,
+  blok "Materi/Kegiatan" & "Catatan", chip kehadiran berwarna
+  (hijau/kuning/indigo/merah), dan — kalau ada siswa tidak hadir — kotak
+  merah muda berisi daftar `NIS — Nama (Status)` satu baris per siswa.
+  Di atas semua itu ada strip KPI (Total Sesi, Jumlah Hari, Total Jam
+  Pelajaran, Rata-rata Kehadiran) dan header dokumen band gelap (nama
+  sekolah, judul, guru/kelas, periode).
+- Mesin gambar generik: `_bangunRekapPdfKartu()` dipakai bersama oleh
+  `buildRekapPdfGuru`/`buildRekapPdfKelas` (parameter beda cuma judul,
+  label pihak, dan chip kedua per sesi — kelas untuk rekap guru, guru
+  untuk rekap kelas). Page-break dihitung manual per kartu (`pastikanRuang()`)
+  supaya kartu TIDAK PERNAH terpotong di tengah halaman.
+- jsPDF-AutoTable sudah tidak dipakai lagi untuk PDF ini (tag CDN-nya
+  dibiarkan di `app.html`, tidak mengganggu, tidak dihapus supaya
+  perubahan tetap minimal).
+- Prompt AI (`buildPromptJurnalGuru`/`Kelas`) ikut diperbarui: baris
+  "Siswa tidak hadir" sekarang daftar per siswa `NIS — Nama (Status)`
+  (fungsi baru `_tulisBarisTidakHadir()`, dipakai kedua prompt), bukan
+  string gabungan seperti sebelumnya.
+- File yang diubah: **hanya** `frontend/js/app.js`.
+
+**Status:** lolos `node --check` semua `.gs`/`.js`, `app.html` tetap
+balance (tidak disentuh sesi ini). **Belum dites di browser sungguhan
+dengan data siswa yang NIS-nya benar-benar berbeda tipe** — user perlu
+konfirmasi setelah deploy apakah nama siswa sekarang muncul dengan benar
+di PDF & prompt.
+
+File yang diubah sesi ini: `apps-script/Jurnal.gs`, `apps-script/TestSuite.gs`,
+`frontend/js/app.js`. Tidak ada file lain yang disentuh.
+
+### 2026-09-18 — Batas karakter jurnal + PROTOTIPE layout PDF baru (BELUM diimplementasikan ke jsPDF)
+
+**Konfirmasi user:** update 17 Sept (fix NIS/nama + redesain kartu) sudah OK.
+User minta penyempurnaan lanjutan untuk PDF:
+1. PDF dibuat **Portrait A4, margin sempit** (sebelumnya landscape).
+2. Header dokumen (judul/sekolah/kelas-guru+periode) dibuat **rata tengah**
+   (sebelumnya rata kiri).
+3. Input **Ringkasan Kegiatan dibatasi maks 700 karakter**, **Catatan maks
+   200 karakter** — supaya tinggi kartu PDF bisa diperkirakan/konsisten.
+4. Layout PDF diubah total: bukan lagi kartu ditumpuk 1 kolom per hari,
+   tapi **grid 2 kolom, target 4 kartu (2 baris) per halaman**, dengan
+   aturan: header hari SELALU baris sendiri (tidak numpang di baris sisa
+   kartu hari sebelumnya), kartu terakhir suatu hari yang ganjil berdiri
+   sendiri (pasangannya kosong), dan halaman tidak pernah memotong 1 baris
+   kartu. User memberi contoh ASCII persis pola ini (SENIN 5 sesi → penuh
+   4 di hal.1, sisa 1 pindah ke hal.2 bareng header SELASA, dst).
+5. **User secara eksplisit minta prototipe HTML dulu dengan data dummy**
+   sebelum kode PDF asli (jsPDF) diubah — supaya tidak salah paham.
+
+**Sudah dikerjakan sesi ini (2 bagian, keduanya SELESAI & aman di-deploy):**
+
+**A. Batas karakter (frontend + backend) — SUDAH DIIMPLEMENTASI, siap deploy:**
+- `frontend/js/app.js`: konstanta `BATAS_KARAKTER_RINGKASAN=700`,
+  `BATAS_KARAKTER_CATATAN=200`; ditambahkan `maxlength` + counter
+  karakter live (`charCounterHtml`/`bindCharCounter`, warna berubah kalau
+  mendekati/mencapai batas) di KEDUA form (buat jurnal baru & edit jurnal),
+  total 4 titik textarea.
+- `apps-script/Jurnal.gs`: validasi cermin di backend (`actionCreateJurnal`
+  & `actionUpdateJurnal`) pakai konstanta yang sama — supaya panggilan API
+  langsung (bukan lewat UI) tidak bisa melewati batas ini. Ini PENTING
+  karena akurasi tinggi kartu PDF nanti bergantung pada asumsi batas ini
+  benar-benar ditegakkan, bukan cuma disarankan di frontend.
+- Status: lolos `node --check`, **belum dites submit form sungguhan di
+  browser**.
+
+**B. Prototipe HTML layout PDF baru — untuk DIVALIDASI USER, BELUM
+diterapkan ke generator PDF asli:**
+- File: `prototype_pdf_portrait_grid.html` (di root folder proyek ini,
+  dan sudah dikirim terpisah ke user via present_files — TIDAK termasuk
+  dalam alur aplikasi, murni alat bantu diskusi).
+- Isi: portrait A4 (ukuran & margin persis pakai CSS `.page{width:210mm;
+  height:297mm;padding:12mm}` supaya preview layar = hasil cetak), header
+  dokumen rata tengah, algoritma paginasi grid 2-kolom/4-kartu-per-halaman
+  (fungsi `paginate()`) — SUDAH DIVERIFIKASI lewat trace manual (Node)
+  persis menghasilkan pola yang sama dengan contoh ASCII user (5 sesi
+  SENIN → penuh 1 halaman, sisa 1 + header SELASA di halaman 2, dst).
+  Ada toggle "Contoh: Rekap Jurnal Kelas" / "Contoh: Rekap Jurnal Guru",
+  data dummy termasuk 1 kartu dengan materi ~700 karakter & catatan ~180
+  karakter (badge kuning di pojok tiap kartu menampilkan jumlah karakter
+  dummy-nya, untuk bantu user menilai apakah font-size sudah pas).
+- **CATATAN interpretasi:** contoh header user untuk versi Guru menulis
+  "Kelas: [Guru] · Periode: ..." — kemungkinan salah ketik (copy-paste
+  dari versi Kelas, lupa ganti label). Di prototipe saya buat jadi "Guru:
+  [Nama Guru] · Periode: ..." supaya konsisten dengan versi Kelas. **User
+  perlu konfirmasi apakah interpretasi ini benar** sebelum dikunci ke PDF asli.
+- **BELUM DIKERJAKAN (menunggu approval user atas prototipe):**
+  mengimplementasikan ulang `_bangunRekapPdfKartu` cs. di `frontend/js/app.js`
+  jadi portrait + grid 2-kolom + header rata tengah + tinggi kartu FIXED
+  (dihitung dari batas 700/200 karakter, bukan dinamis per-konten seperti
+  desain kartu-1-kolom sebelumnya). Fungsi-fungsi PDF SAAT INI (per commit
+  17 Sept: `_pdfHeaderDokumen`, `_pdfKpiStrip`, `_pdfHeaderHari`,
+  `_pdfUkurKartuSesi`, `_pdfGambarKartuSesi`, `_bangunRekapPdfKartu`, dst)
+  MASIH LANDSCAPE 1-KOLOM, BELUM DIUBAH.
+
+**Status:** Bagian A (batas karakter) aman di-deploy sekarang, tidak
+tergantung approval prototipe. Bagian B (redesain PDF) menunggu user buka
+`prototype_pdf_portrait_grid.html` (bisa langsung di browser, tekan
+Ctrl/Cmd+P untuk print-preview), beri feedback (ukuran font pas/kurang/
+kebesaran, mode Guru sudah benar interpretasinya, dsb), baru saya port ke
+`_bangunRekapPdfKartu` di `app.js` yang sesungguhnya.
+
+File yang diubah sesi ini: `apps-script/Jurnal.gs`, `frontend/js/app.js`
+(keduanya untuk bagian A saja). File baru: `prototype_pdf_portrait_grid.html`
+(bukan bagian aplikasi, alat diskusi).
+
+### 2026-09-18 (lanjutan) — Layout PDF v2 LANGSUNG diterapkan: 1 baris penuh per sesi, dalam 70/30
+
+User beri feedback atas prototipe grid 2-kolom (hasil sesi sebelumnya):
+hasilnya terlalu banyak space kosong karena 2 kartu berdampingan sering
+beda tinggi. Diminta ganti: **1 sesi = 1 baris PENUH LEBAR** (bukan lagi
+berpasangan 2 kartu per baris), tapi DI DALAM baris itu dibagi 2 kolom:
+kiri 70% (materi kegiatan + catatan), kanan 30% (info kehadiran). Contoh
+ASCII: `JAM 1 - JAM 3 [MAPEL] [NAMA GURU]` lalu baris isi `[Materi] 70% |
+[Kehadiran] 30%`, ganti baris untuk sesi berikutnya. Target: 1 halaman
+memuat sekitar 3-5 bagian (dinamis sesuai panjang konten, bukan fixed),
+hampir tanpa ruang kosong. User bilang **style (warna/chip) sudah bagus,
+tinggal layout-nya saja** — dan minta LANGSUNG dikerjakan ke kode PDF
+asli (bukan prototipe HTML lagi, karena aturan intinya sudah jelas dari
+sesi grid sebelumnya).
+
+**Diimplementasikan langsung ke `frontend/js/app.js`** (menggantikan
+mesin PDF grid-2-kolom dari sesi ini juga, yang TERNYATA belum sempat
+di-deploy user — jadi tidak ada regresi dari versi yang sudah berjalan):
+- Orientasi PDF: **portrait A4**, margin dipersempit (26pt kiri-kanan,
+  24pt atas, 30pt bawah — dari sebelumnya landscape 32pt).
+- Header dokumen (`_pdfHeaderDokumen`): semua teks (judul, nama sekolah,
+  guru/kelas+periode) dibuat **rata tengah** pakai `{align:'center'}`.
+- Fungsi kartu-2-kolom (`_pdfUkurKartuSesi`/`_pdfGambarKartuSesi`) diganti
+  total jadi `_pdfUkurBarisSesi`/`_pdfGambarBarisSesi` — 1 baris penuh
+  lebar per sesi, di dalamnya kolom kiri 70% (materi+catatan, label kecil
+  + teks wrap) dan kolom kanan 30% (status kehadiran ditumpuk vertikal +
+  "dari total N siswa" + daftar tidak-hadir NIS+nama+status, wrap sesuai
+  lebar kolom sempit), dipisah garis tipis. **Tinggi baris dihitung
+  dinamis** dari isi sesungguhnya (bukan fixed) — jadi TIDAK ADA lagi
+  ruang kosong percuma seperti masalah di desain grid sebelumnya.
+- Perkiraan kapasitas (dihitung & diverifikasi lewat Node, lihat catatan
+  ini): kasus TERBURUK (materi 700 + catatan 200 karakter penuh) muat
+  ±3 baris/halaman; konten khas yang lebih pendek muat jauh lebih banyak
+  (6-8+) — sesuai target "3-5 bagian" sebagai rentang umum, bukan angka
+  mati.
+- `_pdfKelompokkanPerHari`, `_pdfChip`, `_pdfWarnaKehadiran`, algoritma
+  page-break (`pastikanRuang`), dan interface `buildRekapPdfGuru`/
+  `buildRekapPdfKelas` (dipanggil dari 3 tempat UI) TIDAK berubah — jadi
+  tidak perlu ubah apapun di luar mesin gambar PDF ini.
+- KPI strip & header-hari tetap ada, cuma disesuaikan ukurannya untuk
+  lebar portrait yang lebih sempit dari landscape sebelumnya.
+
+**Status:** lolos `node --check`, tidak ada fungsi/variabel dobel atau
+sisa referensi ke fungsi lama. **Belum dites render sungguhan** (tidak
+ada browser di sini) — mohon dicoba export PDF beneran setelah deploy,
+terutama untuk 1 sesi dengan materi mendekati 700 karakter untuk pastikan
+teks tidak terpotong/tumpang tindih dengan kolom kehadiran atau baris
+berikutnya.
+
+File yang diubah sesi ini (lanjutan): **hanya** `frontend/js/app.js`.
+Prototipe grid 2-kolom (`prototype_pdf_portrait_grid.html`) sudah TIDAK
+dipakai lagi (digantikan pendekatan 1-baris-70/30 ini), dibiarkan di
+project sebagai riwayat diskusi saja.
 
 ---
 

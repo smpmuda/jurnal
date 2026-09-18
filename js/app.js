@@ -102,7 +102,7 @@ function forceSyncData() {
 // Beranda) supaya jelas terlihat dan mudah disentuh di HP.
 function refreshBlockButtonHtml() {
   return '<button class="refresh-block-btn" onclick="forceSyncData()">'
-    + '<span class="icon">↻</span> Perbarui Data</button>';
+    + '<span class="icon" aria-hidden="true"><i class="fa-solid fa-rotate"></i></span> Perbarui Data</button>';
 }
 
 function roleLabel(r) {
@@ -144,23 +144,23 @@ function setupBottomNav() {
   var items = [];
   if (activeRole === 'GURU') {
     items = [
-      { route: 'dashboard',          icon: '📅', label: 'Hari Ini' },
-      { route: 'jurnal-saya',        icon: '📋', label: 'Jurnal Saya' },
-      { route: 'jadwal-saya',        icon: '🗓️', label: 'Jadwal Saya' },
-      { route: 'jadwal-kelas-lihat', icon: '🏫', label: 'Jadwal Kelas' },
+      { route: 'dashboard',          icon: 'fa-solid fa-house',          label: 'Hari Ini' },
+      { route: 'jurnal-saya',        icon: 'fa-solid fa-book-bookmark',  label: 'Jurnal Saya' },
+      { route: 'jadwal-saya',        icon: 'fa-solid fa-calendar-days',  label: 'Jadwal Saya' },
+      { route: 'jadwal-kelas-lihat', icon: 'fa-solid fa-chalkboard',     label: 'Jadwal Kelas' },
     ];
   } else if (activeRole === 'WALI_KELAS') {
     items = [
-      { route: 'jurnal-kelas',       icon: '🏫', label: 'Jurnal Kelas' },
-      { route: 'jadwal-kelas-lihat', icon: '🗓️', label: 'Jadwal Kelas' },
+      { route: 'jurnal-kelas',       icon: 'fa-solid fa-book-open-reader', label: 'Jurnal Kelas' },
+      { route: 'jadwal-kelas-lihat', icon: 'fa-solid fa-chalkboard',       label: 'Jadwal Kelas' },
     ];
   } else if (activeRole === 'ADMIN') {
     items = [
-      { route: 'admin-home',         icon: '⚙️', label: 'Beranda' },
-      { route: 'admin-jurnal',       icon: '📚', label: 'Jurnal' },
-      { route: 'admin-guru',         icon: '👤', label: 'Guru' },
-      { route: 'admin-jadwal-kelas', icon: '🗓️', label: 'Jadwal Kelas' },
-      { route: 'admin-log',          icon: '🕒', label: 'Log' },
+      { route: 'admin-home',         icon: 'fa-solid fa-house',              label: 'Beranda' },
+      { route: 'admin-jurnal',       icon: 'fa-solid fa-user-pen',           label: 'Jurnal Guru' },
+      { route: 'admin-guru',         icon: 'fa-solid fa-user-clock',         label: 'Jadwal Guru' },
+      { route: 'admin-jadwal-kelas', icon: 'fa-solid fa-chalkboard',         label: 'Jadwal Kelas' },
+      { route: 'admin-log',          icon: 'fa-solid fa-clock-rotate-left',  label: 'Log Aktivitas' },
     ];
   }
 
@@ -172,8 +172,9 @@ function setupBottomNav() {
 
   $nav.style.display = 'flex';
   $nav.innerHTML = items.map(function(it) {
-    return '<button class="nav-item" data-route="' + it.route + '">'
-      + '<span class="nav-icon">' + it.icon + '</span>' + it.label + '</button>';
+    return '<button class="nav-item" data-route="' + it.route + '" aria-label="' + esc(it.label) + '">'
+      + '<span class="nav-icon"><i class="' + it.icon + '" aria-hidden="true"></i></span>'
+      + '<span class="nav-label">' + it.label + '</span></button>';
   }).join('');
 
   $nav.querySelectorAll('.nav-item').forEach(function(btn) {
@@ -238,7 +239,7 @@ function navigate(route, params, opts) {
   };
 
   if (routes[route]) routes[route](params);
-  else $main.innerHTML = '<div class="empty"><div class="empty-icon">🚧</div><div class="empty-text">Halaman tidak ditemukan</div></div>';
+  else $main.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><div class="empty-text">Halaman tidak ditemukan</div></div>';
 }
 
 // Tombol "Kembali" di semua form/detail SELALU pakai fungsi ini,
@@ -343,6 +344,654 @@ function bindPagination(pageInfo, onNavigate) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// [BARU 2026-09-15] Export Rekap Jurnal Mingguan → PDF
+//
+// Dipakai di 3 tempat: Jurnal Saya (Guru — rekap jurnal sendiri),
+// Jurnal Kelas (Wali Kelas — rekap kelas sendiri), dan Admin → Jurnal Guru
+// (admin, pilih guru ATAU kelas manapun). Backend: getRekapJurnalGuru /
+// getRekapJurnalKelas (lihat Jurnal.gs) — TIDAK menyentuh/mengganti
+// endpoint jurnal yang sudah ada, murni endpoint baru read-only.
+//
+// Library: jsPDF + jsPDF-AutoTable (CDN, dimuat di app.html) — belum ada
+// library PDF apapun sebelumnya di proyek ini, dan ini pilihan paling pas
+// untuk SPA statis GitHub Pages (generate PDF langsung di browser, tanpa
+// perlu endpoint backend baru khusus render file).
+// ══════════════════════════════════════════════════════════════
+
+// "Minggu" didefinisikan Senin–Sabtu (6 hari) — sesuai hari sekolah aktif
+// (Sabtu tetap diikutkan walau JAM_MAKS_SABTU biasanya 0, supaya rekap
+// tetap benar kalau suatu saat ada jadwal Sabtu). Tanggal manapun yang
+// dipilih pengguna otomatis "dibulatkan" ke Senin minggu tersebut.
+function mondayOfWeek(dateStr) {
+  var d = new Date(dateStr + 'T00:00:00');
+  var day = d.getDay(); // 0=Minggu .. 6=Sabtu
+  var diffKeSenin = (day === 0) ? -6 : (1 - day);
+  d.setDate(d.getDate() + diffKeSenin);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function addDaysStr(dateStr, n) {
+  var d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Kartu UI generik "pilih minggu + tombol Export PDF / Salin Prompt AI" —
+// dipakai ulang di 3 tempat. idPrefix harus unik per halaman supaya id
+// elemen tidak bentrok.
+// [BARU 2026-09-18] Batas karakter input jurnal — dipakai frontend
+// (maxlength+counter, cegah input kepanjangan) DAN nanti jadi acuan
+// perhitungan tinggi kartu PDF (1 sumber batas, tidak hardcode dobel).
+var BATAS_KARAKTER_RINGKASAN = 700;
+var BATAS_KARAKTER_CATATAN = 200;
+
+function charCounterHtml(id, max) {
+  return '<div class="char-counter" id="' + id + '_counter" style="text-align:right;font-size:11px;color:var(--gray-400);margin-top:4px">0/' + max + '</div>';
+}
+
+function bindCharCounter(id, max) {
+  var $el = document.getElementById(id);
+  var $counter = document.getElementById(id + '_counter');
+  if (!$el || !$counter) return;
+  function update() {
+    var len = $el.value.length;
+    $counter.textContent = len + '/' + max;
+    $counter.style.color = len >= max ? 'var(--red)' : (len >= max * 0.9 ? '#d97706' : 'var(--gray-400)');
+  }
+  $el.addEventListener('input', update);
+  update();
+}
+
+function exportPdfCardHtml(idPrefix, anchorDate) {
+  var monday = mondayOfWeek(anchorDate || todayStr());
+  var saturday = addDaysStr(monday, 5);
+  return '<div class="filter-card" id="' + idPrefix + '_card">'
+    + '<div class="form-group"><span class="form-label"><i class="fa-solid fa-file-pdf"></i> Export Rekap Jurnal Mingguan</span>'
+    + '<input type="date" class="select-input" id="' + idPrefix + '_tgl" value="' + monday + '"></div>'
+    + '<div class="admin-list-sub" id="' + idPrefix + '_periode" style="margin:8px 0 12px">Periode: '
+    + fmtTanggalIndo(monday) + ' – ' + fmtTanggalIndo(saturday) + '</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    + '<button class="btn-secondary" id="' + idPrefix + '_btn" type="button"><i class="fa-solid fa-file-pdf"></i> Export PDF</button>'
+    + '<button class="btn-secondary" id="' + idPrefix + '_btnPrompt" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> Salin Prompt AI</button>'
+    + '</div>'
+    + '<div id="' + idPrefix + '_promptBox" style="display:none;margin-top:12px"></div>'
+    + '</div>';
+}
+
+// handlers = { pdf: function(mulai, selesai) → Promise, prompt: function(mulai, selesai) → Promise }
+// Masing-masing HARUS return Promise (resolve setelah selesai, atau reject
+// dengan Error kalau gagal) supaya tombolnya sendiri otomatis kembali
+// normal & pesan error muncul lewat toast. Kedua tombol independen —
+// klik salah satu tidak menonaktifkan yang lain.
+function bindExportPdfCard(idPrefix, handlers) {
+  var $tgl = document.getElementById(idPrefix + '_tgl');
+  var $periode = document.getElementById(idPrefix + '_periode');
+  var $btn = document.getElementById(idPrefix + '_btn');
+  var $btnPrompt = document.getElementById(idPrefix + '_btnPrompt');
+  if (!$tgl || !$btn) return;
+
+  function currentRange() {
+    var monday = mondayOfWeek($tgl.value || todayStr());
+    return { mulai: monday, selesai: addDaysStr(monday, 5) };
+  }
+
+  $tgl.addEventListener('change', function() {
+    var r = currentRange();
+    $tgl.value = r.mulai; // snap ke Senin minggu yang dipilih
+    $periode.textContent = 'Periode: ' + fmtTanggalIndo(r.mulai) + ' – ' + fmtTanggalIndo(r.selesai);
+  });
+
+  function pasangTombol($tombol, labelSiap, labelProses, aksi, cekJsPdf) {
+    if (!$tombol) return;
+    $tombol.addEventListener('click', function() {
+      if (cekJsPdf && typeof window.jspdf === 'undefined') {
+        showToast('Library PDF gagal dimuat. Periksa koneksi internet lalu coba lagi.', true);
+        return;
+      }
+      var r = currentRange();
+      var originalHtml = $tombol.innerHTML;
+      $tombol.disabled = true;
+      $tombol.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + labelProses;
+
+      Promise.resolve()
+        .then(function() { return aksi(r.mulai, r.selesai); })
+        .catch(function(e) {
+          showToast('Gagal: ' + (e && e.message ? e.message : e), true);
+        })
+        .then(function() {
+          $tombol.disabled = false;
+          $tombol.innerHTML = originalHtml;
+        });
+    });
+  }
+
+  pasangTombol($btn, 'Export PDF', 'Menyiapkan PDF...', handlers.pdf, true);
+  pasangTombol($btnPrompt, 'Salin Prompt AI', 'Menyiapkan prompt...', handlers.prompt, false);
+}
+
+// ══════════════════════════════════════════════════════════════
+// [REDESAIN 2026-09-18] Mesin gambar PDF rekap — v2, sesuai feedback user:
+// - Portrait A4, margin sempit (sebelumnya landscape)
+// - Header dokumen rata TENGAH (sebelumnya rata kiri)
+// - 1 sesi = 1 baris PENUH LEBAR (bukan lagi 2 kartu berdampingan per
+//   baris — itu yang bikin banyak space kosong kalau tinggi kontennya
+//   beda). Di DALAM 1 baris sesi, baru dibagi 2 kolom: kiri 70%
+//   (materi+catatan), kanan 30% (info kehadiran). Tinggi baris dihitung
+//   dinamis dari isi (bukan fixed), jadi 1 halaman bisa memuat sekitar
+//   3-5 sesi tergantung panjang kontennya (dibatasi maks 700/200 karakter
+//   — lihat BATAS_KARAKTER_RINGKASAN/CATATAN) — tanpa sisa ruang kosong
+//   yang percuma. Tidak ada perubahan backend untuk bagian ini.
+// ══════════════════════════════════════════════════════════════
+
+var PDF_WARNA = {
+  navy: [15, 23, 42], navySoft: [30, 41, 59],
+  biru: [37, 99, 235], biruBg: [219, 234, 254],
+  abuBg: [248, 250, 252], abuBorder: [226, 232, 240],
+  abuTeks: [51, 65, 85], abuMuted: [100, 116, 139],
+  hijau: [4, 120, 87], hijauBg: [209, 250, 229],
+  amber: [180, 83, 9], amberBg: [254, 243, 199],
+  indigo: [67, 56, 202], indigoBg: [224, 231, 255],
+  merah: [190, 18, 60], merahBg: [255, 228, 230],
+};
+
+function _pdfWarnaKehadiran(jenis) {
+  if (jenis === 'sakit') return { fg: PDF_WARNA.amber, bg: PDF_WARNA.amberBg };
+  if (jenis === 'izin')  return { fg: PDF_WARNA.indigo, bg: PDF_WARNA.indigoBg };
+  if (jenis === 'alpa')  return { fg: PDF_WARNA.merah, bg: PDF_WARNA.merahBg };
+  return { fg: PDF_WARNA.hijau, bg: PDF_WARNA.hijauBg }; // hadir/default
+}
+
+// Gambar 1 chip/badge kecil rounded — return lebar yang dipakai supaya bisa
+// disusun berderet dengan gap oleh pemanggil.
+function _pdfChip(doc, x, y, teks, bg, warnaTeks, fontSize) {
+  fontSize = fontSize || 8;
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(fontSize);
+  var padX = 5, h = 12;
+  var w = doc.getTextWidth(teks) + padX * 2;
+  doc.setFillColor(bg[0], bg[1], bg[2]);
+  doc.roundedRect(x, y, w, h, 2.5, 2.5, 'F');
+  doc.setTextColor(warnaTeks[0], warnaTeks[1], warnaTeks[2]);
+  doc.text(teks, x + padX, y + h - 3.6);
+  doc.setTextColor(0, 0, 0);
+  doc.setFont(undefined, 'normal');
+  return w;
+}
+
+// Band gelap judul dokumen (dipakai sekali, di halaman pertama saja) —
+// SEMUA teks rata tengah, sesuai feedback user.
+function _pdfHeaderDokumen(doc, x, y, width, namaSekolah, judul, ringkasanBaris) {
+  var h = 62;
+  var cx = x + width / 2;
+  doc.setFillColor(PDF_WARNA.navy[0], PDF_WARNA.navy[1], PDF_WARNA.navy[2]);
+  doc.roundedRect(x, y, width, h, 8, 8, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(undefined, 'bold'); doc.setFontSize(14.5);
+  doc.text(judul, cx, y + 23, { align: 'center' });
+  doc.setFont(undefined, 'normal'); doc.setFontSize(9.5);
+  doc.setTextColor(203, 213, 225);
+  doc.text(namaSekolah, cx, y + 38, { align: 'center' });
+  doc.setFontSize(9);
+  doc.setTextColor(226, 232, 240);
+  doc.text(ringkasanBaris, cx, y + 52, { align: 'center' });
+  doc.setTextColor(0, 0, 0);
+  return y + h + 12;
+}
+
+// Strip KPI ringkas (Total Sesi, Jumlah Hari, Total JP, Rata-rata Kehadiran).
+function _pdfKpiStrip(doc, x, y, width, kpis) {
+  var gap = 8, boxH = 40;
+  var boxW = (width - gap * (kpis.length - 1)) / kpis.length;
+  kpis.forEach(function(kpi, i) {
+    var bx = x + i * (boxW + gap);
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+    doc.roundedRect(bx, y, boxW, boxH, 4, 4, 'FD');
+    doc.setFont(undefined, 'bold'); doc.setFontSize(13);
+    doc.setTextColor(PDF_WARNA.navy[0], PDF_WARNA.navy[1], PDF_WARNA.navy[2]);
+    doc.text(String(kpi.value), bx + 8, y + 18);
+    doc.setFont(undefined, 'normal'); doc.setFontSize(6.5);
+    doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+    doc.text(kpi.label.toUpperCase(), bx + 8, y + 29, { maxWidth: boxW - 12 });
+  });
+  doc.setTextColor(0, 0, 0);
+  return y + boxH + 12;
+}
+
+// Band gelap header per-hari (pengelompok baris sesi).
+function _pdfHeaderHari(doc, x, y, width, hari, tanggalLabel, jumlahSesi) {
+  var h = 20;
+  doc.setFillColor(PDF_WARNA.navySoft[0], PDF_WARNA.navySoft[1], PDF_WARNA.navySoft[2]);
+  doc.rect(x, y, width, h, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(undefined, 'bold'); doc.setFontSize(10);
+  doc.text((hari || '').toUpperCase() + '  ·  ' + tanggalLabel, x + 8, y + 13.5);
+  doc.setFont(undefined, 'normal'); doc.setFontSize(8);
+  var kananTeks = jumlahSesi + ' sesi';
+  doc.text(kananTeks, x + width - 8 - doc.getTextWidth(kananTeks), y + 13.5);
+  doc.setTextColor(0, 0, 0);
+  return y + h + 6;
+}
+
+// Tulis 1 blok "LABEL KECIL" + teks isi (bisa multi-baris), dalam 1 kolom
+// selebar `lebar`. Return y baru (dipakai kolom kiri: materi lalu catatan).
+function _pdfBlokLabel(doc, x, y, labelTeks, bodyLines, lineH, fontSizeBody) {
+  doc.setFont(undefined, 'bold'); doc.setFontSize(6.8);
+  doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+  doc.text(labelTeks, x, y + 6.5);
+  y += 9.5;
+  doc.setFont(undefined, 'normal'); doc.setFontSize(fontSizeBody || 8.3);
+  doc.setTextColor(PDF_WARNA.abuTeks[0], PDF_WARNA.abuTeks[1], PDF_WARNA.abuTeks[2]);
+  doc.text(bodyLines, x, y + 6);
+  y += bodyLines.length * lineH + 5;
+  doc.setTextColor(0, 0, 0);
+  return y;
+}
+
+// ── Ukur & gambar 1 BARIS sesi (penuh lebar, dalam = kiri 70% / kanan 30%) ──
+
+function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan) {
+  var lineH = 10.3;
+  doc.setFont(undefined, 'normal'); doc.setFontSize(8.3);
+  var materiLines = doc.splitTextToSize(item.ringkasan || '-', lebarKiri);
+  var catatanLines = item.catatan ? doc.splitTextToSize(item.catatan, lebarKiri) : [];
+
+  // Kolom kiri: label+isi materi, lalu (opsional) label+isi catatan
+  var tinggiKiri = 9.5 + materiLines.length * lineH + 5;
+  if (catatanLines.length) tinggiKiri += 9.5 + catatanLines.length * lineH + 5;
+
+  // Kolom kanan: label + baris status kehadiran (stack) + "dari total N" + tidak hadir
+  var kh = item.kehadiran;
+  var jumlahStatus = 1; // Hadir selalu ditampilkan
+  ['sakit', 'izin', 'alpa'].forEach(function(k) { if (kh[k] > 0) jumlahStatus++; });
+  var tidakHadirDetail = item.tidak_hadir_detail || [];
+  doc.setFontSize(7.2);
+  var tidakHadirLineCount = 0;
+  var tidakHadirWrapped = tidakHadirDetail.map(function(t) {
+    var teks = 'NIS ' + t.nis + ' — ' + t.nama + ' (' + t.status + ')';
+    var wrapped = doc.splitTextToSize(teks, lebarKanan);
+    tidakHadirLineCount += wrapped.length;
+    return wrapped;
+  });
+
+  var tinggiKanan = 9.5 + jumlahStatus * 11.5 + 4 + 9; // label + status + gap + "dari total N siswa"
+  if (tidakHadirDetail.length) tinggiKanan += 4 + tidakHadirLineCount * 9.5;
+
+  var tinggiIsi = Math.max(tinggiKiri, tinggiKanan);
+  var chipRowH = 12 + 6;
+  var padAtasBawah = 8 * 2;
+  var height = padAtasBawah + chipRowH + tinggiIsi;
+
+  return {
+    height: height, lineH: lineH, materiLines: materiLines, catatanLines: catatanLines,
+    jumlahStatus: jumlahStatus, tidakHadirWrapped: tidakHadirWrapped,
+  };
+}
+
+function _pdfGambarBarisSesi(doc, x, y, width, item, chip2Label, uk) {
+  var pad = 8, colGap = 10;
+  var innerW = width - pad * 2;
+  var lebarKiri = Math.round((innerW - colGap) * 0.7);
+  var lebarKanan = innerW - colGap - lebarKiri;
+
+  doc.setFillColor(253, 253, 254);
+  doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+  doc.roundedRect(x, y, width, uk.height, 4, 4, 'FD');
+
+  var cx = x + pad;
+  var cy = y + pad;
+
+  // Baris chip: jam · kelas/guru · mapel (penuh lebar, di atas 2 kolom)
+  var w1 = _pdfChip(doc, cx, cy, item.jam_label || '-', PDF_WARNA.navy, [255, 255, 255]);
+  var w2 = _pdfChip(doc, cx + w1 + 5, cy, chip2Label || '-', PDF_WARNA.biruBg, PDF_WARNA.biru);
+  _pdfChip(doc, cx + w1 + 5 + w2 + 5, cy, item.nama_mapel || '-', PDF_WARNA.abuBg, PDF_WARNA.abuTeks);
+  var yIsi = cy + 12 + 6;
+
+  var xKiri = cx;
+  var xKanan = cx + lebarKiri + colGap;
+
+  // Kolom kiri (70%): Materi + Catatan
+  var yKiri = _pdfBlokLabel(doc, xKiri, yIsi, 'MATERI / KEGIATAN', uk.materiLines, uk.lineH);
+  if (uk.catatanLines.length) _pdfBlokLabel(doc, xKiri, yKiri, 'CATATAN', uk.catatanLines, uk.lineH);
+
+  // Garis pemisah tipis antar kolom
+  doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+  doc.line(xKanan - colGap / 2, yIsi - 2, xKanan - colGap / 2, y + uk.height - pad);
+
+  // Kolom kanan (30%): Kehadiran
+  var yKanan = yIsi;
+  doc.setFont(undefined, 'bold'); doc.setFontSize(6.8);
+  doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+  doc.text('KEHADIRAN', xKanan, yKanan + 6.5);
+  yKanan += 11;
+
+  var kh = item.kehadiran;
+  [['hadir', kh.hadir + ' Hadir'], ['sakit', kh.sakit + ' Sakit'], ['izin', kh.izin + ' Izin'], ['alpa', kh.alpa + ' Alpa']]
+    .forEach(function(pair) {
+      if (pair[0] !== 'hadir' && kh[pair[0]] === 0) return;
+      _pdfChip(doc, xKanan, yKanan, pair[1], _pdfWarnaKehadiran(pair[0]).bg, _pdfWarnaKehadiran(pair[0]).fg, 7);
+      yKanan += 11.5;
+    });
+  yKanan += 3;
+  doc.setFont(undefined, 'normal'); doc.setFontSize(7);
+  doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+  doc.text('dari total ' + kh.total + ' siswa', xKanan, yKanan + 5);
+  doc.setTextColor(0, 0, 0);
+  yKanan += 9;
+
+  if (uk.tidakHadirWrapped.length) {
+    yKanan += 4;
+    doc.setFontSize(7.2);
+    uk.tidakHadirWrapped.forEach(function(wrapped) {
+      doc.setTextColor(PDF_WARNA.merah[0], PDF_WARNA.merah[1], PDF_WARNA.merah[2]);
+      doc.text(wrapped, xKanan, yKanan + 5.5);
+      yKanan += wrapped.length * 9.5;
+    });
+    doc.setTextColor(0, 0, 0);
+  }
+}
+
+function _pdfKelompokkanPerHari(items) {
+  var groups = [];
+  var byTanggal = {};
+  items.forEach(function(it) {
+    if (!byTanggal[it.tanggal]) {
+      byTanggal[it.tanggal] = { tanggal: it.tanggal, hari: it.hari, items: [] };
+      groups.push(byTanggal[it.tanggal]);
+    }
+    byTanggal[it.tanggal].items.push(it);
+  });
+  return groups;
+}
+
+// Mesin utama, dipakai bersama oleh buildRekapPdfGuru & buildRekapPdfKelas.
+// opts: { data, judul, pihakLabel, pihakNama, chip2Getter, namaFile }
+function _bangunRekapPdfKartu(opts) {
+  var doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  var namaSekolah = (appConfig && appConfig.nama_sekolah) ? appConfig.nama_sekolah : 'SMP Muhammadiyah 2 Cilacap';
+  var pageW = doc.internal.pageSize.getWidth();
+  var pageH = doc.internal.pageSize.getHeight();
+  var marginX = 26, marginTop = 24, marginBottom = 30; // margin sempit
+  var contentW = pageW - marginX * 2;
+  var lebarKiri = Math.round((contentW - 16 - 10) * 0.7);
+  var lebarKanan = (contentW - 16 - 10) - lebarKiri;
+
+  var data = opts.data;
+  var items = data.items || [];
+  var periode = fmtTanggalIndo(data.tanggal_mulai) + ' – ' + fmtTanggalIndo(data.tanggal_selesai);
+
+  var hariSet = {}, totalJp = 0, sumHadir = 0, sumTotal = 0;
+  items.forEach(function(it) {
+    hariSet[it.tanggal] = true;
+    totalJp += (it.jam_ids ? it.jam_ids.length : 0);
+    sumHadir += it.kehadiran.hadir;
+    sumTotal += it.kehadiran.total;
+  });
+  var kpis = [
+    { label: 'Total Sesi', value: items.length },
+    { label: 'Jumlah Hari', value: Object.keys(hariSet).length },
+    { label: 'Total JP', value: totalJp },
+    { label: 'Rata-rata Hadir', value: sumTotal > 0 ? Math.round((sumHadir / sumTotal) * 100) + '%' : '-' },
+  ];
+
+  var y = marginTop;
+  y = _pdfHeaderDokumen(doc, marginX, y, contentW, namaSekolah, opts.judul,
+    opts.pihakLabel + ': ' + opts.pihakNama + '    ·    Periode: ' + periode);
+  y = _pdfKpiStrip(doc, marginX, y, contentW, kpis);
+
+  function pastikanRuang(tinggi) {
+    if (y + tinggi > pageH - marginBottom) {
+      doc.addPage();
+      y = marginTop;
+      doc.setFont(undefined, 'bold'); doc.setFontSize(8.5);
+      doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+      doc.text(namaSekolah + ' — ' + opts.judul + ' (lanjutan)', marginX, y + 6);
+      doc.setTextColor(0, 0, 0);
+      doc.setFont(undefined, 'normal');
+      y += 16;
+    }
+  }
+
+  var groups = _pdfKelompokkanPerHari(items);
+
+  if (groups.length === 0) {
+    pastikanRuang(36);
+    doc.setFillColor(PDF_WARNA.abuBg[0], PDF_WARNA.abuBg[1], PDF_WARNA.abuBg[2]);
+    doc.roundedRect(marginX, y, contentW, 36, 5, 5, 'F');
+    doc.setFont(undefined, 'normal'); doc.setFontSize(9);
+    doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+    doc.text('Tidak ada jurnal yang tercatat pada periode ini.', marginX + 12, y + 21);
+    doc.setTextColor(0, 0, 0);
+    y += 36;
+  } else {
+    groups.forEach(function(g) {
+      // Header hari tidak boleh jadi baris terakhir sendirian di bawah halaman
+      // tanpa ruang untuk minimal 1 baris sesi setelahnya.
+      pastikanRuang(20 + 6 + 60);
+      y = _pdfHeaderHari(doc, marginX, y, contentW, g.hari, fmtTanggalIndo(g.tanggal), g.items.length);
+
+      g.items.forEach(function(it) {
+        var uk = _pdfUkurBarisSesi(doc, it, lebarKiri, lebarKanan);
+        pastikanRuang(uk.height + 6);
+        _pdfGambarBarisSesi(doc, marginX, y, contentW, it, opts.chip2Getter(it), uk);
+        y += uk.height + 6;
+      });
+      y += 4;
+    });
+  }
+
+  _rekapPdfBeriNomorHalaman(doc);
+  doc.save(opts.namaFile);
+}
+
+function _rekapPdfBeriNomorHalaman(doc) {
+  var pageCount = doc.internal.getNumberOfPages();
+  var pageW = doc.internal.pageSize.getWidth();
+  var pageH = doc.internal.pageSize.getHeight();
+  for (var i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(7.5);
+    doc.setTextColor(120);
+    doc.text('Halaman ' + i + ' dari ' + pageCount, pageW - 90, pageH - 14);
+    doc.text('Dicetak: ' + fmtTanggalIndo(todayStr()), 26, pageH - 14);
+    doc.setTextColor(0);
+  }
+}
+
+function kehadiranSingkat(k) {
+  return k.hadir + 'H · ' + k.sakit + 'S · ' + k.izin + 'I · ' + k.alpa + 'A';
+}
+
+// ── Salin ke clipboard + kotak fallback manual (dipakai fitur Prompt AI) ──
+
+function salinKeClipboard(teks) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(teks).then(function() {
+      showToast('Prompt berhasil disalin ✓ Tempel ke Gemini/ChatGPT/AI lain.');
+    }).catch(function() {
+      showToast('Gagal menyalin otomatis — salin manual dari kotak teks di bawah', true);
+    });
+  }
+  showToast('Browser tidak mendukung salin otomatis — salin manual dari kotak teks di bawah', true);
+  return Promise.resolve();
+}
+
+// Tampilkan textarea berisi prompt lengkap (dibuat lewat DOM, bukan
+// innerHTML string, supaya isi ringkasan/catatan guru — sekalipun
+// mengandung karakter aneh seperti "</textarea>" — tidak bisa merusak
+// tampilan) + tombol "Salin Lagi" untuk fallback manual.
+function tampilkanPromptBox(idPrefix, teks) {
+  var box = document.getElementById(idPrefix + '_promptBox');
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = '<div class="form-label" style="margin-bottom:6px">Prompt AI (sudah dicoba disalin otomatis — kalau browser memblokir, salin manual dari kotak ini):</div>';
+
+  var ta = document.createElement('textarea');
+  ta.className = 'select-input';
+  ta.id = idPrefix + '_promptText';
+  ta.rows = 10;
+  ta.readOnly = true;
+  ta.style.fontFamily = 'monospace';
+  ta.style.fontSize = '11px';
+  ta.style.lineHeight = '1.5';
+  ta.style.whiteSpace = 'pre-wrap';
+  ta.value = teks;
+  box.appendChild(ta);
+
+  var btnCopyLagi = document.createElement('button');
+  btnCopyLagi.className = 'btn-secondary';
+  btnCopyLagi.type = 'button';
+  btnCopyLagi.style.marginTop = '8px';
+  btnCopyLagi.innerHTML = '<i class="fa-solid fa-copy"></i> Salin Lagi';
+  btnCopyLagi.addEventListener('click', function() { salinKeClipboard(teks); });
+  box.appendChild(btnCopyLagi);
+
+  ta.focus();
+  ta.select(); // supaya guru tinggal Ctrl+C kalau clipboard API diblokir browser
+}
+
+// Instruksi baku yang dipakai di kedua jenis prompt (Guru & Kelas) — satu
+// tempat, supaya kalau instruksinya mau disempurnakan nanti cukup ubah
+// di sini saja, tidak dua tempat terpisah.
+// [BARU 2026-09-17] Tulis baris "Siswa tidak hadir" pakai NIS+nama+status
+// per siswa (dari tidak_hadir_detail) — sebelumnya cuma pakai label gabungan
+// yang bisa jatuh ke NIS-saja kalau nama gagal di-resolve. Dipakai kedua
+// jenis prompt (Guru & Kelas) supaya formatnya konsisten.
+function _tulisBarisTidakHadir(lines, it) {
+  var detail = it.tidak_hadir_detail || [];
+  if (!detail.length) {
+    lines.push('Siswa tidak hadir: -');
+    return;
+  }
+  lines.push('Siswa tidak hadir:');
+  detail.forEach(function(t) {
+    lines.push('  - NIS ' + t.nis + ' — ' + t.nama + ' (' + t.status + ')');
+  });
+}
+
+var PROMPT_AI_ATURAN = [
+  'ATURAN PENTING:',
+  '- Jangan mengarang atau menambahkan fakta, angka, atau kejadian yang TIDAK ADA dalam data di bawah.',
+  '- Kalau ada data yang kosong/tidak dicatat, jangan diasumsikan — cukup sebutkan "tidak dicatat" atau lewati.',
+  '- Gunakan bahasa Indonesia yang formal, jelas, dan enak dibaca.',
+  '- Boleh mengelompokkan/meringkas beberapa sesi yang mirip, tapi tetap jujur pada data aslinya.',
+  '- Hasil akhir berupa dokumen/laporan naratif dengan sub-judul, boleh disertai poin-poin — BUKAN tabel mentah (datanya sudah disertakan di bawah, tugasmu mengolahnya jadi narasi yang bermakna).',
+].join('\n');
+
+function buildPromptJurnalGuru(data) {
+  var namaSekolah = (appConfig && appConfig.nama_sekolah) ? appConfig.nama_sekolah : 'SMP Muhammadiyah 2 Cilacap';
+  var periode = fmtTanggalIndo(data.tanggal_mulai) + ' s.d. ' + fmtTanggalIndo(data.tanggal_selesai);
+
+  var lines = [];
+  lines.push('Kamu adalah asisten yang membantu seorang guru menyusun LAPORAN PEMBELAJARAN MINGGUAN yang rapi, terstruktur, dan profesional, HANYA berdasarkan data jurnal mengajar mentah di bawah ini.');
+  lines.push('');
+  lines.push(PROMPT_AI_ATURAN);
+  lines.push('');
+  lines.push('TUGAS — susun laporan pembelajaran mingguan yang mencakup:');
+  lines.push('1. Ringkasan kegiatan pembelajaran per kelas/mapel selama periode ini');
+  lines.push('2. Perkembangan atau capaian siswa yang terlihat dari data (kalau ada)');
+  lines.push('3. Kendala atau catatan penting yang ditemukan (kalau tercatat di data)');
+  lines.push('4. Rekap kehadiran siswa selama periode ini');
+  lines.push('5. Ringkasan umum dan rekomendasi tindak lanjut untuk minggu berikutnya, berdasarkan data yang tersedia');
+  lines.push('');
+  lines.push('==================== DATA JURNAL (JANGAN DIUBAH ISINYA) ====================');
+  lines.push('Sekolah: ' + namaSekolah);
+  lines.push('Guru: ' + data.nama_guru);
+  lines.push('Periode: ' + periode);
+  lines.push('Total sesi mengajar: ' + data.total_sesi);
+  lines.push('');
+
+  if (!data.items.length) {
+    lines.push('(Tidak ada jurnal yang tercatat pada periode ini.)');
+  } else {
+    data.items.forEach(function(it, i) {
+      lines.push('--- Sesi ' + (i + 1) + ' ---');
+      lines.push('Tanggal: ' + fmtTanggalIndo(it.tanggal) + ' (' + it.hari + ')');
+      lines.push('Jam ke: ' + (it.jam_label || '-'));
+      lines.push('Kelas: ' + it.nama_kelas);
+      lines.push('Mapel: ' + it.nama_mapel);
+      lines.push('Kegiatan/Materi yang diajarkan: ' + (it.ringkasan || '-'));
+      lines.push('Catatan tambahan: ' + (it.catatan || '-'));
+      lines.push('Kehadiran: ' + kehadiranSingkat(it.kehadiran) + ' (dari total ' + it.kehadiran.total + ' siswa)');
+      _tulisBarisTidakHadir(lines, it);
+      lines.push('');
+    });
+  }
+  lines.push('==================== AKHIR DATA ====================');
+  lines.push('');
+  lines.push('Sekarang, susun laporan pembelajaran mingguannya sesuai instruksi di atas.');
+
+  return lines.join('\n');
+}
+
+function buildPromptJurnalKelas(data) {
+  var namaSekolah = (appConfig && appConfig.nama_sekolah) ? appConfig.nama_sekolah : 'SMP Muhammadiyah 2 Cilacap';
+  var periode = fmtTanggalIndo(data.tanggal_mulai) + ' s.d. ' + fmtTanggalIndo(data.tanggal_selesai);
+
+  var lines = [];
+  lines.push('Kamu adalah asisten yang membantu seorang WALI KELAS menyusun LAPORAN PERKEMBANGAN KELAS mingguan yang rapi, terstruktur, dan profesional, HANYA berdasarkan data jurnal kelas mentah di bawah ini (jurnal dari semua mapel yang diajarkan di kelas ini selama periode tsb).');
+  lines.push('');
+  lines.push(PROMPT_AI_ATURAN);
+  lines.push('');
+  lines.push('TUGAS — susun laporan perkembangan kelas mingguan yang mencakup:');
+  lines.push('1. Ringkasan kegiatan pembelajaran di kelas ini per mapel selama periode ini');
+  lines.push('2. Pola kehadiran siswa di kelas ini selama periode ini (termasuk siswa yang sering tidak hadir, kalau terlihat dari data)');
+  lines.push('3. Catatan atau kendala penting lintas mapel yang ditemukan (kalau tercatat di data)');
+  lines.push('4. Ringkasan umum kondisi kelas dan rekomendasi untuk wali kelas di minggu berikutnya, berdasarkan data yang tersedia');
+  lines.push('');
+  lines.push('==================== DATA JURNAL KELAS (JANGAN DIUBAH ISINYA) ====================');
+  lines.push('Sekolah: ' + namaSekolah);
+  lines.push('Kelas: ' + data.nama_kelas);
+  lines.push('Periode: ' + periode);
+  lines.push('Total sesi tercatat: ' + data.total_sesi);
+  lines.push('');
+
+  if (!data.items.length) {
+    lines.push('(Tidak ada jurnal yang tercatat pada periode ini.)');
+  } else {
+    data.items.forEach(function(it, i) {
+      lines.push('--- Sesi ' + (i + 1) + ' ---');
+      lines.push('Tanggal: ' + fmtTanggalIndo(it.tanggal) + ' (' + it.hari + ')');
+      lines.push('Jam ke: ' + (it.jam_label || '-'));
+      lines.push('Mapel: ' + it.nama_mapel);
+      lines.push('Guru: ' + it.nama_guru);
+      lines.push('Kegiatan/Materi yang diajarkan: ' + (it.ringkasan || '-'));
+      lines.push('Catatan tambahan: ' + (it.catatan || '-'));
+      lines.push('Kehadiran: ' + kehadiranSingkat(it.kehadiran) + ' (dari total ' + it.kehadiran.total + ' siswa)');
+      _tulisBarisTidakHadir(lines, it);
+      lines.push('');
+    });
+  }
+  lines.push('==================== AKHIR DATA ====================');
+  lines.push('');
+  lines.push('Sekarang, susun laporan perkembangan kelas mingguannya sesuai instruksi di atas.');
+
+  return lines.join('\n');
+}
+
+function buildRekapPdfGuru(data) {
+  _bangunRekapPdfKartu({
+    data: data,
+    judul: 'Rekap Jurnal Mengajar Mingguan',
+    pihakLabel: 'Guru',
+    pihakNama: data.nama_guru,
+    chip2Getter: function(it) { return it.nama_kelas; },
+    namaFile: 'Rekap-Jurnal-Guru-Minggu-' + data.tanggal_mulai + '.pdf',
+  });
+}
+
+function buildRekapPdfKelas(data) {
+  _bangunRekapPdfKartu({
+    data: data,
+    judul: 'Rekap Jurnal Kelas Mingguan',
+    pihakLabel: 'Kelas',
+    pihakNama: data.nama_kelas,
+    chip2Getter: function(it) { return it.nama_guru; },
+    namaFile: 'Rekap-Jurnal-Kelas-Minggu-' + data.tanggal_mulai + '.pdf',
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 // VIEW: Dashboard Guru (Jadwal Hari Ini / Tanggal Pilihan)
 // ══════════════════════════════════════════════════════════════
 
@@ -393,7 +1042,7 @@ function renderDashboardHtml(d, updating) {
   html += '<div class="sec-title">Jadwal Mengajar — ' + fmtTanggalIndo(dashTanggal) + '</div>';
 
   if (d.jadwal.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jam pelajaran pada hari ini</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jam pelajaran pada hari ini</div></div>';
   } else {
     d.jadwal.forEach(function(j) {
       html += jadwalCardHtml(j);
@@ -415,7 +1064,7 @@ function dateBarHtml(tanggal, route, showJadwalKelasLink) {
     + (isHariIni ? 'Menampilkan data hari ini.' : 'Menampilkan data ' + fmtTanggalIndo(tanggal) + '.')
     + ' Pilih tanggal lain di atas untuk melihat data pada tanggal tersebut.</div>';
   if (showJadwalKelasLink) {
-    html += '<div class="quick-link-row"><a class="quick-link" onclick="navigate(\'jadwal-kelas-lihat\')">🏫 Lihat Jadwal Kelas Lain</a></div>';
+    html += '<div class="quick-link-row"><a class="quick-link" onclick="navigate(\'jadwal-kelas-lihat\')"><i class="fa-solid fa-chalkboard"></i> Lihat Jadwal Kelas Lain</a></div>';
   }
   return html;
 }
@@ -525,10 +1174,12 @@ function viewJurnalForm(params) {
     html += '</div></div>';
 
     html += '<div class="form-group"><span class="form-label">Ringkasan Kegiatan *</span>';
-    html += '<textarea id="ringkasan" rows="3" placeholder="Contoh: Algoritma dan flowchart dasar" required></textarea></div>';
+    html += '<textarea id="ringkasan" rows="3" maxlength="' + BATAS_KARAKTER_RINGKASAN + '" placeholder="Contoh: Algoritma dan flowchart dasar" required></textarea>';
+    html += charCounterHtml('ringkasan', BATAS_KARAKTER_RINGKASAN) + '</div>';
 
     html += '<div class="form-group"><span class="form-label">Catatan (opsional)</span>';
-    html += '<textarea id="catatan" rows="2" placeholder="Catatan tambahan..."></textarea></div>';
+    html += '<textarea id="catatan" rows="2" maxlength="' + BATAS_KARAKTER_CATATAN + '" placeholder="Catatan tambahan..."></textarea>';
+    html += charCounterHtml('catatan', BATAS_KARAKTER_CATATAN) + '</div>';
 
     html += '<div class="form-group"><span class="form-label">Kehadiran (' + siswa.length + ' siswa, default Hadir — klik yang tidak hadir)</span>';
     html += '<div id="siswaList">';
@@ -548,6 +1199,8 @@ function viewJurnalForm(params) {
     bindJamCheckboxes();
     bindStatusButtons();
     bindSimpanJurnal(blok);
+    bindCharCounter('ringkasan', BATAS_KARAKTER_RINGKASAN);
+    bindCharCounter('catatan', BATAS_KARAKTER_CATATAN);
   });
 }
 
@@ -731,10 +1384,12 @@ function viewJurnalEdit(params) {
     html += '<div style="font-size:11px;color:var(--gray-400);margin-top:6px">ℹ Tanggal, kelas, mapel, dan jam tidak bisa diubah. Buat jurnal baru jika salah sesi.</div></div>';
 
     html += '<div class="form-group"><span class="form-label">Ringkasan Kegiatan *</span>';
-    html += '<textarea id="ringkasan" rows="3" required>' + esc(j.ringkasan) + '</textarea></div>';
+    html += '<textarea id="ringkasan" rows="3" maxlength="' + BATAS_KARAKTER_RINGKASAN + '" required>' + esc(j.ringkasan) + '</textarea>';
+    html += charCounterHtml('ringkasan', BATAS_KARAKTER_RINGKASAN) + '</div>';
 
     html += '<div class="form-group"><span class="form-label">Catatan (opsional)</span>';
-    html += '<textarea id="catatan" rows="2">' + esc(j.catatan || '') + '</textarea></div>';
+    html += '<textarea id="catatan" rows="2" maxlength="' + BATAS_KARAKTER_CATATAN + '">' + esc(j.catatan || '') + '</textarea>';
+    html += charCounterHtml('catatan', BATAS_KARAKTER_CATATAN) + '</div>';
 
     html += '<div class="form-group"><span class="form-label">Kehadiran (' + siswa.length + ' siswa)</span>';
     html += '<div id="siswaList">';
@@ -755,6 +1410,8 @@ function viewJurnalEdit(params) {
 
     bindStatusButtons();
     bindUpdateJurnal(j.jurnal_id);
+    bindCharCounter('ringkasan', BATAS_KARAKTER_RINGKASAN);
+    bindCharCounter('catatan', BATAS_KARAKTER_CATATAN);
   });
 }
 
@@ -861,32 +1518,37 @@ function viewJurnalSaya(params) {
 function renderJurnalSayaHtml(d, updating) {
   var html = '<div class="sec-title">Riwayat Jurnal Saya (' + d.totalItems + ')</div>';
   if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
-  html += '<div class="chip-row" id="filterBulanSaya">';
-  html += '<button type="button" class="chip' + (jurnalSayaBulan === '' ? ' active' : '') + '" data-val="">Semua Bulan</button>';
+  html += exportPdfCardHtml('exportGuru', todayStr());
+  html += '<div class="month-filter">';
+  html += '<button type="button" id="btnSemuaBulan" class="month-filter-all' + (jurnalSayaBulan === '' ? ' active' : '') + '">Semua Bulan</button>';
+  html += '<div class="month-filter-select-wrap"><span class="form-label">Bulan</span><select class="select-input" id="selBulanSaya">';
+  html += '<option value=""' + (jurnalSayaBulan === '' ? ' selected' : '') + '>Pilih bulan</option>';
   for (var b = 1; b <= 12; b++) {
     var bStr = String(b).padStart(2, '0');
-    html += '<button type="button" class="chip' + (bStr === jurnalSayaBulan ? ' active' : '') + '" data-val="' + bStr + '">' + BULAN_NAMA[b] + '</button>';
+    html += '<option value="' + bStr + '"' + (bStr === jurnalSayaBulan ? ' selected' : '') + '>' + BULAN_NAMA[b] + '</option>';
   }
-  html += '</div>';
+  html += '</select></div></div>';
 
   if (d.items.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Belum ada jurnal yang dibuat</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-book-bookmark"></i></div><div class="empty-text">Belum ada jurnal yang dibuat</div></div>';
   } else {
     d.items.forEach(function(j) {
       html += '<div class="admin-list-item" data-id="' + j.jurnal_id + '" style="cursor:pointer">'
         + '<div><div class="admin-list-main">' + esc(j.nama_mapel) + ' — ' + esc(j.nama_kelas) + '</div>'
         + '<div class="admin-list-sub">' + fmtTanggalIndo(j.tanggal) + ' · ' + esc(j.jam_label) + '</div></div>'
-        + '<span class="badge badge-done">✓</span></div>';
+        + '<span class="badge badge-done"><i class="fa-solid fa-check"></i></span></div>';
     });
   }
   html += paginationHtml(d);
 
   $main.innerHTML = html;
-  document.querySelectorAll('#filterBulanSaya .chip').forEach(function(chip) {
-    chip.addEventListener('click', function() {
-      jurnalSayaBulan = chip.dataset.val;
-      navigate('jurnal-saya', { page: 1 });
-    });
+  document.getElementById('btnSemuaBulan').addEventListener('click', function() {
+    jurnalSayaBulan = '';
+    navigate('jurnal-saya', { page: 1 });
+  });
+  document.getElementById('selBulanSaya').addEventListener('change', function(e) {
+    jurnalSayaBulan = e.target.value;
+    navigate('jurnal-saya', { page: 1 });
   });
   document.querySelectorAll('.admin-list-item[data-id]').forEach(function(item) {
     item.addEventListener('click', function() {
@@ -894,6 +1556,26 @@ function renderJurnalSayaHtml(d, updating) {
     });
   });
   bindPagination(d, function(newPage) { navigate('jurnal-saya', { page: newPage }); });
+
+  bindExportPdfCard('exportGuru', {
+    pdf: function(mulai, selesai) {
+      return API.call('getRekapJurnalGuru', { tanggal_mulai: mulai, tanggal_selesai: selesai }, 'GET')
+        .then(function(res) {
+          if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+          buildRekapPdfGuru(res.data);
+          showToast('PDF rekap jurnal berhasil dibuat ✓');
+        });
+    },
+    prompt: function(mulai, selesai) {
+      return API.call('getRekapJurnalGuru', { tanggal_mulai: mulai, tanggal_selesai: selesai }, 'GET')
+        .then(function(res) {
+          if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+          var teks = buildPromptJurnalGuru(res.data);
+          tampilkanPromptBox('exportGuru', teks);
+          return salinKeClipboard(teks);
+        });
+    },
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -909,7 +1591,7 @@ function viewJurnalKelas(params) {
   var kelasId = params.kelas_id || STATE.waliKelasId;
 
   if (!kelasId) {
-    $main.innerHTML = '<div class="empty"><div class="empty-icon">🏫</div><div class="empty-text">Anda belum ditugaskan sebagai wali kelas</div></div>';
+    $main.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-chalkboard"></i></div><div class="empty-text">Anda belum ditugaskan sebagai wali kelas</div></div>';
     return;
   }
   STATE._kelasIdCtx = kelasId;
@@ -932,22 +1614,45 @@ function viewJurnalKelas(params) {
 
 function renderJurnalKelasHtml(d, updating) {
   var html = refreshBlockButtonHtml();
-  html += '<div class="wali-info-badge">👤 Wali Kelas: ' + esc(d.nama_kelas) + '</div>';
+  html += '<div class="wali-info-badge"><i class="fa-solid fa-user"></i> Wali Kelas: ' + esc(d.nama_kelas) + '</div>';
   html += dateBarHtml(jurnalKelasTanggal, 'jurnal-kelas', true);
   if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
   html += tidakHadirSummaryHtml(d.mapel);
   html += '<div class="sec-title">Jurnal Kelas · ' + fmtTanggalIndo(jurnalKelasTanggal) + '</div>';
 
   if (d.mapel.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
   } else {
     d.mapel.forEach(function(m) {
       html += mapelCardHtml(m);
     });
   }
 
+  html += exportPdfCardHtml('exportKelas', jurnalKelasTanggal);
+
   $main.innerHTML = html;
   bindDateBar('jurnal-kelas');
+
+  var kelasIdUtkExport = STATE._kelasIdCtx;
+  bindExportPdfCard('exportKelas', {
+    pdf: function(mulai, selesai) {
+      return API.call('getRekapJurnalKelas', { kelas_id: kelasIdUtkExport, tanggal_mulai: mulai, tanggal_selesai: selesai }, 'GET')
+        .then(function(res) {
+          if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+          buildRekapPdfKelas(res.data);
+          showToast('PDF rekap jurnal berhasil dibuat ✓');
+        });
+    },
+    prompt: function(mulai, selesai) {
+      return API.call('getRekapJurnalKelas', { kelas_id: kelasIdUtkExport, tanggal_mulai: mulai, tanggal_selesai: selesai }, 'GET')
+        .then(function(res) {
+          if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+          var teks = buildPromptJurnalKelas(res.data);
+          tampilkanPromptBox('exportKelas', teks);
+          return salinKeClipboard(teks);
+        });
+    },
+  });
 }
 
 // [BARU] Ringkasan siswa tidak hadir hari itu (gabungan dari semua mapel yang
@@ -967,7 +1672,7 @@ function tidakHadirSummaryHtml(mapelList) {
   if (nisList.length === 0) return '';
 
   var html = '<div class="absent-summary">';
-  html += '<div class="absent-summary-title">😷 Siswa Tidak Hadir Hari Ini (' + nisList.length + ')</div>';
+  html += '<div class="absent-summary-title"><i class="fa-solid fa-user-xmark"></i> Siswa Tidak Hadir Hari Ini (' + nisList.length + ')</div>';
   nisList.forEach(function(nis) {
     var s = map[nis];
     html += '<div class="absent-row"><div class="absent-nama">' + esc(s.nama) + '</div><div class="absent-tags">';
@@ -989,7 +1694,7 @@ function mapelCardHtml(m) {
   html += '<div class="jadwal-mapel">' + esc(m.nama_mapel) + '</div>';
   html += '<div class="jadwal-meta">' + esc(m.jam_label) + ' · Guru: ' + esc(m.nama_guru) + '</div>';
   html += '</div>';
-  html += m.sudah_diisi ? '<span class="badge badge-done">✓ Diisi</span>' : '<span class="badge badge-todo">Belum diisi</span>';
+  html += m.sudah_diisi ? '<span class="badge badge-done"><i class="fa-solid fa-check"></i> Diisi</span>' : '<span class="badge badge-todo">Belum diisi</span>';
   html += '</div>';
 
   if (m.sudah_diisi) {
@@ -1112,7 +1817,7 @@ function loadJadwalKelasLihat() {
 
 function renderJadwalLihatHasil($hasil, d) {
   if (d.jadwal.length === 0) {
-    $hasil.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
+    $hasil.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jadwal pada hari ini</div></div>';
     return;
   }
   var html = '';
@@ -1137,10 +1842,10 @@ function viewAdminHome(params) {
     + '<div class="admin-list-sub">Admin — akses penuh sistem</div></div></div>';
 
   html += '<div class="sec-title">Menu</div>';
-  html += '<div class="admin-list-item" id="goJurnal" style="cursor:pointer"><div class="admin-list-main">📚 Semua Jurnal</div></div>';
-  html += '<div class="admin-list-item" id="goGuru" style="cursor:pointer"><div class="admin-list-main">👤 Jadwal per Guru</div></div>';
-  html += '<div class="admin-list-item" id="goJadwalKelas" style="cursor:pointer"><div class="admin-list-main">🗓️ Jadwal Kelas</div></div>';
-  html += '<div class="admin-list-item" id="goLog" style="cursor:pointer"><div class="admin-list-main">🕒 Log Aktivitas</div></div>';
+  html += '<div class="admin-list-item" id="goJurnal" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-user-pen"></i> Jurnal Guru</div></div>';
+  html += '<div class="admin-list-item" id="goGuru" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-user-clock"></i> Jadwal Guru</div></div>';
+  html += '<div class="admin-list-item" id="goJadwalKelas" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-chalkboard"></i> Jadwal Kelas</div></div>';
+  html += '<div class="admin-list-item" id="goLog" style="cursor:pointer"><div class="admin-list-main"><i class="fa-solid fa-clock-rotate-left"></i> Log Aktivitas</div></div>';
 
   html += '<div class="sec-title">Catatan</div>';
   html += '<div class="admin-list-item"><div class="admin-list-sub" style="line-height:1.6">'
@@ -1207,6 +1912,27 @@ function viewAdminJurnal(params) {
 
     html += '<button class="btn-primary" id="btnCariJurnal" style="margin-top:14px">Cari</button>';
     html += '</div>';
+
+    // [BARU 2026-09-15] Export Rekap Mingguan (PDF) — admin bisa pilih Jurnal
+    // Guru (guru manapun) atau Jurnal Kelas (kelas manapun), memakai daftar
+    // guru/kelas yang sudah dimuat di atas (tidak fetch ulang).
+    html += '<div class="sec-title">Export Rekap Jurnal Mingguan (PDF)</div>';
+    html += '<div class="filter-card" id="exportAdmin_card">';
+    html += '<div class="form-grid-2">';
+    html += '<div class="form-group"><span class="form-label">Jenis Jurnal</span><select class="select-input" id="exportAdmin_jenis">'
+      + '<option value="guru">Jurnal Guru</option><option value="kelas">Jurnal Kelas</option></select></div>';
+    html += '<div class="form-group"><span class="form-label" id="exportAdmin_targetLabel">Guru</span><select class="select-input" id="exportAdmin_target"></select></div>';
+    html += '</div>';
+    html += '<div class="form-group" style="margin-top:14px"><span class="form-label">Awal Minggu</span>'
+      + '<input type="date" class="select-input" id="exportAdmin_tgl" value="' + mondayOfWeek(todayStr()) + '"></div>';
+    html += '<div class="admin-list-sub" id="exportAdmin_periode" style="margin:8px 0 12px"></div>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+    html += '<button class="btn-secondary" id="exportAdmin_btn" type="button"><i class="fa-solid fa-file-pdf"></i> Export PDF</button>';
+    html += '<button class="btn-secondary" id="exportAdmin_btnPrompt" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> Salin Prompt AI</button>';
+    html += '</div>';
+    html += '<div id="exportAdmin_promptBox" style="display:none;margin-top:12px"></div>';
+    html += '</div>';
+
     html += '<div id="adminJurnalHasil" style="margin-top:16px"></div>';
 
     $main.innerHTML = html;
@@ -1221,8 +1947,96 @@ function viewAdminJurnal(params) {
       loadAdminJurnal();
     });
 
+    bindExportAdminCard();
     loadAdminJurnal();
   });
+}
+
+// Binder khusus panel export admin (jenis Guru/Kelas + target + minggu).
+// Terpisah dari bindExportPdfCard generik karena butuh select "jenis" &
+// "target" tambahan yang tidak dipakai di 2 tempat lain (Jurnal Saya,
+// Jurnal Kelas wali kelas — di sana target sudah pasti diri sendiri).
+function bindExportAdminCard() {
+  var $jenis = document.getElementById('exportAdmin_jenis');
+  var $targetLabel = document.getElementById('exportAdmin_targetLabel');
+  var $target = document.getElementById('exportAdmin_target');
+  var $tgl = document.getElementById('exportAdmin_tgl');
+  var $periode = document.getElementById('exportAdmin_periode');
+  var $btn = document.getElementById('exportAdmin_btn');
+  var $btnPrompt = document.getElementById('exportAdmin_btnPrompt');
+  if (!$jenis || !$target || !$btn) return;
+
+  function isiOpsiTarget() {
+    var list = ($jenis.value === 'kelas') ? STATE.kelasList : STATE.guruList;
+    $targetLabel.textContent = ($jenis.value === 'kelas') ? 'Kelas' : 'Guru';
+    $target.innerHTML = (list || []).map(function(item) {
+      var id = item.kelas_id || item.guru_id;
+      var nama = item.nama_kelas || item.nama;
+      return '<option value="' + id + '">' + esc(nama) + '</option>';
+    }).join('');
+  }
+
+  function tampilkanPeriode() {
+    var monday = mondayOfWeek($tgl.value || todayStr());
+    $tgl.value = monday;
+    $periode.textContent = 'Periode: ' + fmtTanggalIndo(monday) + ' – ' + fmtTanggalIndo(addDaysStr(monday, 5));
+  }
+
+  isiOpsiTarget();
+  tampilkanPeriode();
+
+  $jenis.addEventListener('change', isiOpsiTarget);
+  $tgl.addEventListener('change', tampilkanPeriode);
+
+  // Dipakai kedua tombol (PDF & Prompt AI) — ambil rekap sesuai jenis/target
+  // yang sedang dipilih di panel. Mengembalikan Promise<{jenis, data}>.
+  function ambilRekapTerpilih() {
+    if (!$target.value) return Promise.reject(new Error('Data guru/kelas belum tersedia'));
+    var monday = mondayOfWeek($tgl.value || todayStr());
+    var saturday = addDaysStr(monday, 5);
+    var jenis = $jenis.value;
+    var promise = (jenis === 'kelas')
+      ? API.call('getRekapJurnalKelas', { kelas_id: $target.value, tanggal_mulai: monday, tanggal_selesai: saturday }, 'GET')
+      : API.call('getRekapJurnalGuru', { guru_id: $target.value, tanggal_mulai: monday, tanggal_selesai: saturday }, 'GET');
+    return promise.then(function(res) {
+      if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+      return { jenis: jenis, data: res.data };
+    });
+  }
+
+  function pasangTombolAdmin($tombol, labelProses, aksi, cekJsPdf) {
+    if (!$tombol) return;
+    $tombol.addEventListener('click', function() {
+      if (cekJsPdf && typeof window.jspdf === 'undefined') {
+        showToast('Library PDF gagal dimuat. Periksa koneksi internet lalu coba lagi.', true);
+        return;
+      }
+      var originalHtml = $tombol.innerHTML;
+      $tombol.disabled = true;
+      $tombol.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + labelProses;
+
+      ambilRekapTerpilih()
+        .then(aksi)
+        .catch(function(e) {
+          showToast('Gagal: ' + (e && e.message ? e.message : e), true);
+        })
+        .then(function() {
+          $tombol.disabled = false;
+          $tombol.innerHTML = originalHtml;
+        });
+    });
+  }
+
+  pasangTombolAdmin($btn, 'Menyiapkan PDF...', function(r) {
+    if (r.jenis === 'kelas') buildRekapPdfKelas(r.data); else buildRekapPdfGuru(r.data);
+    showToast('PDF rekap jurnal berhasil dibuat ✓');
+  }, true);
+
+  pasangTombolAdmin($btnPrompt, 'Menyiapkan prompt...', function(r) {
+    var teks = (r.jenis === 'kelas') ? buildPromptJurnalKelas(r.data) : buildPromptJurnalGuru(r.data);
+    tampilkanPromptBox('exportAdmin', teks);
+    return salinKeClipboard(teks);
+  }, false);
 }
 
 function loadAdminJurnal() {
@@ -1241,7 +2055,7 @@ function loadAdminJurnal() {
 
     var html = '<div class="sec-title">Hasil (' + d.totalItems + ')</div>';
     if (d.items.length === 0) {
-      html += '<div class="empty"><div class="empty-icon">📚</div><div class="empty-text">Tidak ada jurnal untuk filter ini</div></div>';
+      html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-inbox"></i></div><div class="empty-text">Tidak ada jurnal untuk filter ini</div></div>';
     } else {
       d.items.forEach(function(j) {
         html += '<div class="admin-list-item" data-id="' + j.jurnal_id + '" style="cursor:pointer">'
@@ -1392,7 +2206,7 @@ var jadwalSayaGuruCache = null; // hasil getJadwalPerGuru milik sendiri, dipakai
 
 function viewJadwalSayaGuru(params) {
   if (!session.guru_id) {
-    $main.innerHTML = '<div class="empty"><div class="empty-icon">👤</div><div class="empty-text">Akun ini belum terhubung ke data guru</div></div>';
+    $main.innerHTML = '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-user-slash"></i></div><div class="empty-text">Akun ini belum terhubung ke data guru</div></div>';
     return;
   }
 
@@ -1479,7 +2293,7 @@ function renderAdminLogHtml(d, updating) {
   if (updating) html += '<div class="quiet-sync-note"><span class="dot"></span>Memperbarui data terbaru…</div>';
 
   if (d.items.length === 0) {
-    html += '<div class="empty"><div class="empty-icon">🕒</div><div class="empty-text">Belum ada log</div></div>';
+    html += '<div class="empty"><div class="empty-icon"><i class="fa-solid fa-clock-rotate-left"></i></div><div class="empty-text">Belum ada log</div></div>';
   } else {
     d.items.forEach(function(l) {
       html += '<div class="admin-list-item"><div>'

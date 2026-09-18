@@ -6,6 +6,22 @@
 var SS = SpreadsheetApp.getActiveSpreadsheet();
 var CACHE = CacheService.getScriptCache();
 
+// [BARU — root cause fix, 2026-09-13] Kolom "aktif" di berbagai sheet bisa
+// berisi BOOLEAN asli (kalau user membuat kolomnya sebagai checkbox di Google
+// Sheets) ATAU teks "TRUE" (sesuai konvensi awal proyek). Perbandingan lama
+// `String(r.aktif) === 'TRUE'` SELALU FALSE untuk boolean asli, karena
+// String(true) di JavaScript menghasilkan "true" huruf kecil, bukan "TRUE"
+// huruf besar — akibatnya baris yang sebenarnya aktif malah tersaring habis
+// (gejala: daftar guru/kelas/jadwal/siswa kosong padahal datanya benar).
+// isAktif() menerima KEDUA bentuk (boolean asli maupun teks, case-insensitive,
+// whitespace berlebih ditoleransi) supaya tidak rapuh terhadap cara user
+// mengisi kolom di spreadsheet.
+function isAktif(val) {
+  if (val === true) return true;
+  if (val === false || val === null || val === undefined) return false;
+  return String(val).trim().toUpperCase() === 'TRUE';
+}
+
 // TTL cache per jenis sheet (detik). Sheet yang jarang berubah (master data)
 // di-cache lebih lama; sheet yang sering ditulis (jurnal/kehadiran) lebih pendek
 // atau tidak di-cache sama sekali supaya data selalu segar.
@@ -248,7 +264,7 @@ function getConfig() {
   var rows = readSheet('01_CONFIG');
   var cfg = {};
   rows.forEach(function(r) {
-    if (r.aktif === 'TRUE' || r.aktif === true) {
+    if (isAktif(r.aktif)) {
       cfg[r.config_key] = r.config_value;
     }
   });

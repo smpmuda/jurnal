@@ -13,6 +13,60 @@ jangan lanjut ke langkah berikutnya kalau verifikasi gagal.
 > 4. Timpa ulang seluruh isi folder `frontend/` di GitHub, termasuk file baru `js/cache.js`
 > 5. **Test WAJIB**: jalankan skenario C8.9 (test cache & trigger `onEdit`) — ini fitur baru yang paling berisiko kalau ada yang tidak sesuai harapan
 
+> **CATATAN UPDATE 2026-09-18 lanjutan (layout PDF v2 — 1 baris/sesi, 70/30, portrait):**
+> - Timpa **hanya** `frontend/js/app.js`.
+> - Cek: PDF sekarang portrait A4 margin sempit, header rata tengah, 1 sesi = 1 baris penuh
+>   (bukan lagi 2 kartu berdampingan), kolom kiri 70% materi+catatan / kolom kanan 30% kehadiran.
+> - **Paling penting:** coba export minggu yang ada sesi dengan materi mendekati 700 karakter
+>   (batas maksimal) — pastikan teks tidak terpotong atau tumpang tindih dengan kolom kehadiran
+>   di sebelahnya atau baris sesi berikutnya. Kalau terpotong, laporkan sesi mana + screenshot.
+
+> **CATATAN UPDATE 2026-09-17 (fix nama siswa hilang + redesain PDF kartu + fix 4 test palsu):**
+> - Timpa `apps-script/Jurnal.gs`, `apps-script/TestSuite.gs`, `frontend/js/app.js` → Deploy New version.
+> - Jalankan `runFullTest()` ulang — 4 FAIL sebelumnya (CONFIG JAM_MAKS, createJurnal duplikat,
+>   getJadwalPerGuru) seharusnya sudah PASS.
+> - Test manual: Export PDF untuk minggu yang ada siswa TIDAK HADIR (sakit/izin/alpa) — buka
+>   PDF-nya, pastikan kotak merah muda di kartu sesi menampilkan `NIS xxxx — Nama Siswa (Status)`
+>   untuk SETIAP siswa yang tidak hadir, bukan cuma NIS.
+> - Cek tampilan PDF baru: kartu per sesi dikelompokkan per hari (band gelap), strip KPI di atas
+>   (Total Sesi/Jumlah Hari/Total JP/Rata-rata Kehadiran), chip kehadiran berwarna. Pastikan tidak
+>   ada kartu yang terpotong di tepi halaman saat data banyak (lebih dari beberapa hari).
+> - Cek juga "Salin Prompt AI" — baris "Siswa tidak hadir" sekarang berupa daftar per siswa
+>   dengan NIS, bukan satu baris gabungan.
+
+> **CATATAN UPDATE 2026-09-16 (fitur Salin Prompt AI):**
+> - Timpa ulang **hanya** `frontend/js/app.js` (tidak ada file backend `.gs` yang berubah).
+> - Test manual: buka **Jurnal Saya** (Guru) / **Jurnal Kelas** (Wali Kelas) / **Admin →
+>   Jurnal Guru** → klik **Salin Prompt AI** di sebelah tombol Export PDF → pastikan muncul
+>   toast "Prompt berhasil disalin ✓" DAN kotak teks di bawah tombol berisi data yang benar
+>   (tanggal, kelas/mapel, ringkasan, kehadiran sesuai minggu yang dipilih)
+> - Coba tempel hasil salinan ke Gemini/ChatGPT beneran, minta buatkan laporan pembelajaran
+>   — cek hasilnya masuk akal dan tidak mengarang fakta yang tidak ada di data
+> - Kalau clipboard tidak jalan otomatis (browser tertentu suka memblokir), pastikan tombol
+>   "Salin Lagi" di kotak teks tetap berfungsi sebagai fallback
+
+> **CATATAN UPDATE 2026-09-15 (fix bug edit-jurnal + fitur Export PDF Mingguan):**
+> 1. Timpa ulang **3 file**: `apps-script/Jurnal.gs`, `apps-script/Code.gs`, `apps-script/TestSuite.gs`
+> 2. Timpa ulang **2 file frontend**: `frontend/app.html`, `frontend/js/app.js`
+> 3. Deploy → Manage deployments → Edit → **New version** → Deploy (bukan "New deployment")
+> 4. Jalankan `runFullTest()` — ada test baru `testRekapJurnalMingguan` (section 7)
+> 5. **Test manual WAJIB** (fitur baru, belum pernah dicoba di browser sungguhan):
+>    - Login sebagai GURU → buka **Jurnal Saya** → pastikan ada kartu "Export Rekap Jurnal
+>      Mingguan (PDF)" di atas daftar. Pilih tanggal apa saja → cek label periode otomatis
+>      jadi Senin–Sabtu minggu itu → klik **Export PDF** → PDF ter-download, isinya sesuai
+>      jurnal Anda di minggu itu saja (bukan minggu lain)
+>    - Login sebagai WALI KELAS → buka **Jurnal Kelas** → cek kartu export yang sama muncul
+>      di bagian bawah halaman → coba export
+>    - Login sebagai ADMIN → buka **Jurnal Guru** → cek panel "Export Rekap Jurnal Mingguan"
+>      di bawah tombol Cari → coba ganti jenis **Jurnal Guru** ↔ **Jurnal Kelas** (dropdown
+>      target harus ikut berubah isinya) → coba export kedua jenis
+>    - Coba pilih minggu yang TIDAK ada jurnalnya sama sekali → PDF tetap harus ter-generate
+>      (bukan error), isinya baris "Tidak ada jurnal pada periode ini"
+>    - Kalau sebelumnya guru non-admin pernah gagal edit jurnal dengan pesan "Fitur edit
+>      jurnal sedang dinonaktifkan oleh admin" padahal `IZIN_EDIT_JURNAL` sudah dicentang
+>      TRUE di `01_CONFIG` — coba lagi sekarang, seharusnya sudah bisa (ini bug yang diperbaiki
+>      sesi ini, lihat `Master_Progress.md` bagian 2026-09-15)
+
 ---
 
 ## BAGIAN A — Setup Spreadsheet & Apps Script
@@ -397,6 +451,28 @@ Login sebagai `admin`:
 - [ ] Sebagai Admin, buka **Jadwal Guru**, pilih salah satu guru sampai jadwalnya termuat
 - [ ] Tanpa pindah halaman, tap tombol 🔄 di header (sinkron manual)
 - [ ] Halaman **Jadwal Guru** yang sedang dibuka harus tampil skeleton lagi lalu ambil data fresh dari server — SEBELUM perbaikan ini, halaman tetap menampilkan data lama begitu saja (bug lama, sekarang sudah diperbaiki)
+
+---
+
+### C9.7. Test Redesign Visual "Modern SaaS" (2026-09-13)
+
+**Ikon Font Awesome:**
+- [ ] Buka app di browser — pastikan ikon bottom nav & tombol sync TIDAK kosong/kotak putus-putus (tanda Font Awesome gagal dimuat, biasanya karena CDN diblokir firewall sekolah — kalau ini terjadi, ikon akan hilang total, bukan tampil sebagai emoji lama)
+- [ ] Cek tiap role: Guru (4 ikon), Wali Kelas (2 ikon), Admin (5 ikon) — semua ikon besar & jelas, bukan emoji kecil lagi
+- [ ] Buka Admin → Beranda, pastikan label menu ("Jurnal Guru", "Jadwal Guru", "Log Aktivitas") sama persis dengan label di bottom nav
+
+**Animasi tombol sync:**
+- [ ] Tap ikon 🔄 (sekarang ikon Font Awesome) di pojok kanan atas header — HANYA ikonnya yang berputar, kotak/border tombolnya harus diam total
+- [ ] Tap tombol besar "Perbarui Data" di Dashboard/Jurnal Kelas/Admin Beranda — sama, hanya ikon kecil di kirinya yang berputar
+
+**Jurnal Saya — dropdown bulan:**
+- [ ] Buka Jurnal Saya (Guru) — filter sekarang berupa tombol "Semua Bulan" + satu dropdown "Bulan" (bukan deretan chip lagi)
+- [ ] Buka dropdown, pilih "Desember" (bulan yang dulu susah dijangkau di chip) — harus langsung bisa dipilih tanpa geser apapun, dan filter berjalan normal
+- [ ] Tap "Semua Bulan" — filter reset, dropdown kembali ke "Pilih bulan"
+
+**Font & tampilan umum:**
+- [ ] Font teks di seluruh app sekarang "Plus Jakarta Sans" (font custom, bukan font default HP) — cek dengan mata, bentuk huruf harus konsisten di semua device
+- [ ] Bandingkan sekilas dengan screenshot sebelumnya — tampilan harus terasa lebih halus/rapi, bukan berubah drastis (data, fungsi, alur kerja semua sama persis)
 
 ---
 

@@ -103,6 +103,10 @@ function handleRequest(e, method) {
     if (action === 'getDetailJurnal')   return actionGetDetailJurnal(params, session);
     if (action === 'getJurnalKelas')    return actionGetJadwalKelas(params, session);
 
+    // ── Rekap Jurnal Mingguan (Export PDF) ────────────────────
+    if (action === 'getRekapJurnalGuru')  return actionGetRekapJurnalGuru(params, session);
+    if (action === 'getRekapJurnalKelas') return actionGetRekapJurnalKelas(params, session);
+
     // ── Admin ────────────────────────────────────────────────
     if (action === 'getAllJurnal')       return actionGetAllJurnal(params, session);
     if (action === 'updateConfig')       return actionUpdateConfig(body, session);

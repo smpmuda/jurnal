@@ -21,7 +21,7 @@ function actionLogin(body) {
   // Cari user
   var users = readSheet('03_USER');
   var user = users.find(function(u) {
-    return String(u.username).toLowerCase() === username && String(u.aktif) === 'TRUE';
+    return String(u.username).toLowerCase() === username && isAktif(u.aktif);
   });
 
   if (!user) return err('Username tidak ditemukan atau akun nonaktif', 401);
@@ -84,6 +84,7 @@ function actionLogin(body) {
     user_id: sessionData.user_id,
     nama:    sessionData.nama,
     role:    sessionData.role,
+    guru_id: sessionData.guru_id,
     kelas_wali: kelasWali
   });
 }
