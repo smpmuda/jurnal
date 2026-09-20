@@ -476,13 +476,30 @@ function _indexSiswaByNis(siswaRows) {
   return map;
 }
 
+// [FIX 2026-09-20] Normalisasi nilai status kehadiran sebelum dicocokkan.
+// Sebelumnya pakai `String(t.status).toLowerCase()` polos dibandingkan
+// LANGSUNG ke key 'sakit'/'izin'/'alpa' — kalau nilai asli di sheet sedikit
+// beda (spasi ekstra, "Alpha" bukan "Alpa", dst), pencocokan gagal TOTAL:
+// rekap.sakit/izin/alpa selalu 0 (meski hadir/tidak-hadir tetap benar,
+// karena itu dihitung dari JUMLAH baris, bukan dari status) — dan di
+// frontend, pengelompokan nama siswa per status jadi KOSONG SAMA SEKALI
+// (nama tidak hadir tidak muncul, walau datanya ADA). Dicocokkan pakai
+// "dimulai dengan" (bukan exact match) supaya lebih toleran.
+function _normalisasiStatusKehadiran(status) {
+  var s = String(status || '').trim().toLowerCase();
+  if (s.indexOf('sakit') === 0) return 'sakit';
+  if (s.indexOf('izin') === 0) return 'izin';
+  if (s.indexOf('alp') === 0) return 'alpa'; // cocok utk "Alpa" maupun "Alpha"
+  return s;
+}
+
 function _rekapKehadiranSatuJurnal(jurnalId, totalSiswaKelas, tidakHadirByJurnal, siswaIdx) {
   var th = tidakHadirByJurnal[String(jurnalId)] || [];
   var rekap = { hadir: Math.max(0, totalSiswaKelas - th.length), sakit: 0, izin: 0, alpa: 0, total: totalSiswaKelas };
   var label = [];
   var detail = []; // [BARU] {nis, nama, status, keterangan} — dipakai PDF & prompt AI supaya NIS+nama tampil lengkap
   th.forEach(function(t) {
-    var st = String(t.status).toLowerCase();
+    var st = _normalisasiStatusKehadiran(t.status);
     if (rekap[st] !== undefined) rekap[st]++;
     var nisAsli = String(t.nis).trim();
     var s = siswaIdx[_nisKey(nisAsli)];
@@ -626,9 +643,18 @@ function actionGetRekapJurnalKelas(params, session) {
   var jurnalJamByJurnal = groupBy(readSheet('11_JURNAL_JAM'), 'jurnal_id');
   var tidakHadirByJurnal = groupBy(readSheet('12_KEHADIRAN'), 'jurnal_id');
 
+  // [FIX 2026-09-20] siswaIdx SEBELUMNYA cuma dibangun dari siswa AKTIF di
+  // kelas ini (var siswaKelas di bawah) — akibatnya nama siswa yang sudah
+  // dinonaktifkan/pindah kelas (tapi punya catatan kehadiran historis di
+  // jurnal lama kelas ini) GAGAL ditemukan, jatuh ke fallback "(nama tidak
+  // ditemukan)". totalSiswa (utk hitung Hadir/Tidak Hadir) TETAP dari siswa
+  // AKTIF saja di kelas ini (itu benar, mencerminkan jumlah siswa saat ini)
+  // — tapi pencarian NAMA untuk histori kehadiran dicari dari SELURUH
+  // 06_SISWA (NIS unik secara nasional, jadi aman dicari lintas kelas/status
+  // aktif) — sama seperti pola di actionGetRekapJurnalGuru.
   var siswaKelas = filterBy('06_SISWA', 'kelas_id', kelasId).filter(function(s) { return isAktif(s.aktif); });
   var totalSiswa = siswaKelas.length;
-  var siswaIdx = _indexSiswaByNis(siswaKelas);
+  var siswaIdx = _indexSiswaByNis(readSheet('06_SISWA'));
 
   var items = jurnal.map(function(j) {
     var g = guruIdx[String(j.guru_id)];

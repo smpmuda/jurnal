@@ -662,6 +662,37 @@ function _pdfEfekFade(doc, x, yAtas, lebar, tinggi) {
 // (PDF_KEHADIRAN_STATUS_BLOK_H), kalau lebih dipotong+fade — lalu baris
 // total ("Tidak Hadir N · Hadir M dari T siswa") di posisi TETAP di bawah,
 // tidak pernah ikut terpotong.
+// [FIX 2026-09-20] Sebelumnya dikelompokkan pakai key HARDCODE
+// 'sakit'/'izin'/'alpa' — kalau nilai status di data sedikit beda (spasi,
+// "Alpha" bukan "Alpa", dst), grup jadi KOSONG TOTAL dan nama siswa tidak
+// hadir SAMA SEKALI TIDAK MUNCUL di PDF (cuma baris total yang tampil,
+// karena itu dihitung terpisah dari jumlah baris, bukan dari status).
+// Sekarang dikelompokkan APA ADANYA dari status yang benar-benar ada di
+// data (dicocokkan longgar pakai "dimulai dengan" ke 3 status baku untuk
+// urutan+warna, status lain di luar itu tetap ditampilkan apa adanya,
+// bukan didiamkan/dibuang).
+function _pdfKelompokkanTidakHadir(detailList) {
+  var urutanBaku = ['sakit', 'izin', 'alpa'];
+  var warnaBaku = { sakit: PDF_WARNA.amber, izin: PDF_WARNA.indigo, alpa: PDF_WARNA.merah };
+  var map = {};
+  var urutanMuncul = [];
+  (detailList || []).forEach(function(t) {
+    var labelAsli = String(t.status || '-').trim() || '-';
+    var norm = labelAsli.toLowerCase();
+    if (norm.indexOf('sakit') === 0) norm = 'sakit';
+    else if (norm.indexOf('izin') === 0) norm = 'izin';
+    else if (norm.indexOf('alp') === 0) norm = 'alpa';
+    if (!map[norm]) { map[norm] = { label: labelAsli, nama: [] }; urutanMuncul.push(norm); }
+    map[norm].nama.push(t.nama);
+  });
+  var hasil = [];
+  urutanBaku.forEach(function(k) { if (map[k]) hasil.push({ label: map[k].label, nama: map[k].nama, warna: warnaBaku[k] }); });
+  urutanMuncul.forEach(function(k) {
+    if (urutanBaku.indexOf(k) === -1) hasil.push({ label: map[k].label, nama: map[k].nama, warna: PDF_WARNA.abuTeks });
+  });
+  return hasil;
+}
+
 function _pdfGambarKehadiranKanan(doc, xKanan, yTop, lebarKanan, item) {
   var kh = item.kehadiran;
 
@@ -673,16 +704,7 @@ function _pdfGambarKehadiranKanan(doc, xKanan, yTop, lebarKanan, item) {
   var yBlokAtas = yTop + PDF_KEHADIRAN_LABEL_H;
   var yBlokBawah = yBlokAtas + PDF_KEHADIRAN_STATUS_BLOK_H;
 
-  // Kelompokkan tidak_hadir_detail per status → "Sakit (3): Andre, Dimas, Farhan"
-  var byStatus = { sakit: [], izin: [], alpa: [] };
-  (item.tidak_hadir_detail || []).forEach(function(t) {
-    var k = String(t.status || '').toLowerCase();
-    if (byStatus[k]) byStatus[k].push(t.nama);
-  });
-  var grup = [];
-  if (byStatus.sakit.length) grup.push({ label: 'Sakit', nama: byStatus.sakit, warna: PDF_WARNA.amber });
-  if (byStatus.izin.length)  grup.push({ label: 'Izin',  nama: byStatus.izin,  warna: PDF_WARNA.indigo });
-  if (byStatus.alpa.length)  grup.push({ label: 'Alpa',  nama: byStatus.alpa,  warna: PDF_WARNA.merah });
+  var grup = _pdfKelompokkanTidakHadir(item.tidak_hadir_detail);
 
   doc.setFont(undefined, 'normal'); doc.setFontSize(7);
   var cy = yBlokAtas;
