@@ -608,18 +608,43 @@ function _pdfBlokLabel(doc, x, y, labelTeks, bodyLines, lineH, fontSizeBody) {
 
 // ── Ukur & gambar 1 BARIS sesi (penuh lebar, dalam = kiri 70% / kanan 30%) ──
 
-// Kolom kanan (Kehadiran) sekarang punya TINGGI TETAP (tidak dihitung dari
-// isi) — kalau daftar nama per status kepanjangan, cukup dipotong dan diberi
-// efek fade/blur di ujungnya (lihat _pdfEfekFade), BUKAN bikin baris makin
-// tinggi. Ini juga yang bikin tinggi baris sesi jadi jauh lebih mudah
-// diprediksi (cuma tergantung kolom kiri/materi yang memang dibatasi
-// BATAS_KARAKTER_RINGKASAN/CATATAN).
+// [REDESAIN 2026-09-20 — permintaan user] Sebelumnya kolom Kehadiran
+// dibatasi TINGGI TETAP (konstanta), lepas dari tinggi kolom Materi/
+// Catatan di sebelahnya. User minta pendekatan yang lebih pas: "auto max"
+// = tinggi TEORITIS kalau Materi persis 700 karakter + Catatan persis 200
+// karakter (batas maksimal yang sudah ditegakkan di form input & backend).
+// Itu jadi PLAFON tinggi baris. Untuk baris yang materinya lebih pendek
+// dari batas maksimal, baris BOLEH tetap lebih pendek — TAPI kalau daftar
+// siswa tidak hadir butuh ruang lebih banyak, baris boleh "meregang" naik
+// sampai plafon itu supaya daftarnya muat penuh (tidak usah di-blur kalau
+// memang masih di bawah plafon). Fade/blur HANYA dipakai kalau daftar
+// tidak hadir masih lebih panjang dari plafon itu sendiri.
 var PDF_KEHADIRAN_LABEL_H = 11;
-var PDF_KEHADIRAN_STATUS_BLOK_H = 40; // area tetap utk daftar "Sakit/Izin/Alpa: nama..."
 var PDF_KEHADIRAN_TOTAL_H = 13;
-var PDF_KEHADIRAN_KANAN_TINGGI = PDF_KEHADIRAN_LABEL_H + PDF_KEHADIRAN_STATUS_BLOK_H + PDF_KEHADIRAN_TOTAL_H;
 
-function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan) {
+// Teks contoh sepanjang tepat batas karakter (dipotong ke panjang pas),
+// dipakai SEKALI per PDF untuk mengukur tinggi teoritis maksimal lewat
+// wrapping asli jsPDF (bukan tebakan char-per-baris manual) — supaya
+// akurat mengikuti font/ukuran yang benar-benar dipakai.
+var PDF_TEKS_UKUR_DASAR = 'Kegiatan pembelajaran hari ini membahas materi dengan diskusi kelompok, tanya jawab, dan latihan soal bersama siswa di kelas. ';
+function _pdfTeksUkurSepanjang(n) {
+  var s = '';
+  while (s.length < n) s += PDF_TEKS_UKUR_DASAR;
+  return s.slice(0, n);
+}
+
+// Tinggi teoritis kolom kiri (Materi+Catatan) kalau keduanya PERSIS di
+// batas maksimal karakter — dihitung SEKALI per PDF (lebarKiri sama utk
+// semua baris), dipakai sebagai plafon tinggi baris.
+function _pdfTinggiKiriMaksTeoritis(doc, lebarKiri) {
+  doc.setFont(undefined, 'normal'); doc.setFontSize(8.3);
+  var lineH = 10.3;
+  var mLines = doc.splitTextToSize(_pdfTeksUkurSepanjang(BATAS_KARAKTER_RINGKASAN), lebarKiri);
+  var cLines = doc.splitTextToSize(_pdfTeksUkurSepanjang(BATAS_KARAKTER_CATATAN), lebarKiri);
+  return (9.5 + mLines.length * lineH + 5) + (9.5 + cLines.length * lineH + 5);
+}
+
+function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan, tinggiMaksAuto) {
   var lineH = 10.3;
   doc.setFont(undefined, 'normal'); doc.setFontSize(8.3);
   var materiLines = doc.splitTextToSize(item.ringkasan || '-', lebarKiri);
@@ -629,12 +654,31 @@ function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan) {
   var tinggiKiri = 9.5 + materiLines.length * lineH + 5;
   if (catatanLines.length) tinggiKiri += 9.5 + catatanLines.length * lineH + 5;
 
-  var tinggiIsi = Math.max(tinggiKiri, PDF_KEHADIRAN_KANAN_TINGGI);
+  // Kolom kanan: hitung tinggi kalau SEMUA nama tidak-hadir ditampilkan utuh
+  var kelompok = _pdfKelompokkanTidakHadir(item.tidak_hadir_detail);
+  doc.setFont(undefined, 'normal'); doc.setFontSize(7);
+  var totalBarisKanan = 0;
+  kelompok.forEach(function(g) {
+    var teks = g.label + ' (' + g.nama.length + '): ' + g.nama.join(', ');
+    totalBarisKanan += doc.splitTextToSize(teks, lebarKanan).length;
+  });
+  var tinggiKananPenuh = PDF_KEHADIRAN_LABEL_H + totalBarisKanan * 9 + PDF_KEHADIRAN_TOTAL_H;
+
+  // Plafon = tinggi teoritis maks (atau tinggi kiri aktual kalau entah
+  // kenapa lebih tinggi dari perkiraan teoritis — jaga-jaga, materi tidak
+  // boleh pernah ikut terpotong).
+  var plafon = Math.max(tinggiKiri, tinggiMaksAuto);
+  var tinggiIsi = Math.min(Math.max(tinggiKiri, tinggiKananPenuh), plafon);
+  var kananTerpotong = tinggiKananPenuh > tinggiIsi + 0.01;
+
   var chipRowH = 12 + 6;
   var padAtasBawah = 8 * 2;
   var height = padAtasBawah + chipRowH + tinggiIsi;
 
-  return { height: height, lineH: lineH, materiLines: materiLines, catatanLines: catatanLines };
+  return {
+    height: height, lineH: lineH, materiLines: materiLines, catatanLines: catatanLines,
+    tinggiIsi: tinggiIsi, kelompok: kelompok, kananTerpotong: kananTerpotong,
+  };
 }
 
 // Efek "blur/transparansi" untuk menutup teks yang kepotong di ujung area
@@ -657,11 +701,7 @@ function _pdfEfekFade(doc, x, yAtas, lebar, tinggi) {
   }
 }
 
-// Gambar kolom kanan "KEHADIRAN": label, lalu daftar per status (Sakit/Izin/
-// Alpa) dikelompokkan berisi nama-nama siswa — dibatasi tinggi TETAP
-// (PDF_KEHADIRAN_STATUS_BLOK_H), kalau lebih dipotong+fade — lalu baris
-// total ("Tidak Hadir N · Hadir M dari T siswa") di posisi TETAP di bawah,
-// tidak pernah ikut terpotong.
+// Kelompokkan tidak_hadir_detail per status → "Sakit (3): Andre, Dimas, Farhan"
 // [FIX 2026-09-20] Sebelumnya dikelompokkan pakai key HARDCODE
 // 'sakit'/'izin'/'alpa' — kalau nilai status di data sedikit beda (spasi,
 // "Alpha" bukan "Alpa", dst), grup jadi KOSONG TOTAL dan nama siswa tidak
@@ -693,7 +733,12 @@ function _pdfKelompokkanTidakHadir(detailList) {
   return hasil;
 }
 
-function _pdfGambarKehadiranKanan(doc, xKanan, yTop, lebarKanan, item) {
+// grup & kananTerpotong sudah dihitung sekali di _pdfUkurBarisSesi (supaya
+// tidak dihitung ulang + supaya keputusan "perlu fade atau tidak" konsisten
+// dengan tinggi baris yang sudah ditetapkan). statusBlokTinggi = ruang
+// yang BENAR-BENAR tersedia untuk daftar nama pada baris ini (mengikuti
+// tinggi baris aktual, BUKAN konstanta tetap lagi).
+function _pdfGambarKehadiranKanan(doc, xKanan, yTop, lebarKanan, item, statusBlokTinggi, kelompok, kananTerpotong) {
   var kh = item.kehadiran;
 
   doc.setFont(undefined, 'bold'); doc.setFontSize(6.8);
@@ -702,27 +747,27 @@ function _pdfGambarKehadiranKanan(doc, xKanan, yTop, lebarKanan, item) {
   doc.setTextColor(0, 0, 0);
 
   var yBlokAtas = yTop + PDF_KEHADIRAN_LABEL_H;
-  var yBlokBawah = yBlokAtas + PDF_KEHADIRAN_STATUS_BLOK_H;
-
-  var grup = _pdfKelompokkanTidakHadir(item.tidak_hadir_detail);
+  var yBlokBawah = yBlokAtas + statusBlokTinggi;
 
   doc.setFont(undefined, 'normal'); doc.setFontSize(7);
   var cy = yBlokAtas;
   var terpotong = false;
-  for (var i = 0; i < grup.length && !terpotong; i++) {
-    var g = grup[i];
+  for (var i = 0; i < kelompok.length && !terpotong; i++) {
+    var g = kelompok[i];
     var teks = g.label + ' (' + g.nama.length + '): ' + g.nama.join(', ');
     var wrapped = doc.splitTextToSize(teks, lebarKanan);
     doc.setTextColor(g.warna[0], g.warna[1], g.warna[2]);
     for (var j = 0; j < wrapped.length; j++) {
-      if (cy + 9 > yBlokBawah) { terpotong = true; break; }
+      if (cy + 9 > yBlokBawah + 0.01) { terpotong = true; break; }
       doc.text(wrapped[j], xKanan, cy + 6.5);
       cy += 9;
     }
   }
   doc.setTextColor(0, 0, 0);
 
-  if (terpotong) _pdfEfekFade(doc, xKanan - 1, yBlokBawah - 16, lebarKanan + 2, 16);
+  // Fade HANYA kalau daftar memang tidak muat (kananTerpotong dari
+  // _pdfUkurBarisSesi) — kalau muat penuh, ditampilkan utuh tanpa efek apa pun.
+  if (kananTerpotong || terpotong) _pdfEfekFade(doc, xKanan - 1, yBlokBawah - 16, lebarKanan + 2, 16);
 
   // Baris total — SELALU di posisi tetap, tidak pernah terpotong
   var tidakHadir = kh.total - kh.hadir;
@@ -763,8 +808,10 @@ function _pdfGambarBarisSesi(doc, x, y, width, item, chip2Label, uk) {
   doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
   doc.line(xKanan - colGap / 2, yIsi - 2, xKanan - colGap / 2, y + uk.height - pad);
 
-  // Kolom kanan (30%): Kehadiran — tinggi tetap, lihat _pdfGambarKehadiranKanan
-  _pdfGambarKehadiranKanan(doc, xKanan, yIsi, lebarKanan, item);
+  // Kolom kanan (30%): Kehadiran — tinggi mengikuti tinggi baris aktual
+  // (lihat _pdfUkurBarisSesi), bukan konstanta tetap lagi.
+  var statusBlokTinggi = uk.tinggiIsi - PDF_KEHADIRAN_LABEL_H - PDF_KEHADIRAN_TOTAL_H;
+  _pdfGambarKehadiranKanan(doc, xKanan, yIsi, lebarKanan, item, statusBlokTinggi, uk.kelompok, uk.kananTerpotong);
 }
 
 function _pdfKelompokkanPerHari(items) {
@@ -829,6 +876,7 @@ function _bangunRekapPdfKartu(opts) {
   }
 
   var groups = _pdfKelompokkanPerHari(items);
+  var tinggiMaksAuto = _pdfTinggiKiriMaksTeoritis(doc, lebarKiri);
 
   if (groups.length === 0) {
     pastikanRuang(36);
@@ -847,7 +895,7 @@ function _bangunRekapPdfKartu(opts) {
       y = _pdfHeaderHari(doc, marginX, y, contentW, g.hari, fmtTanggalIndo(g.tanggal), g.items.length);
 
       g.items.forEach(function(it) {
-        var uk = _pdfUkurBarisSesi(doc, it, lebarKiri, lebarKanan);
+        var uk = _pdfUkurBarisSesi(doc, it, lebarKiri, lebarKanan, tinggiMaksAuto);
         pastikanRuang(uk.height + 6);
         _pdfGambarBarisSesi(doc, marginX, y, contentW, it, opts.chip2Getter(it), uk);
         y += uk.height + 6;
