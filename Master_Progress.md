@@ -1,6 +1,6 @@
 # Master Progress — Jurnal Mengajar
 **SMP Muhammadiyah 2 Cilacap**
-Terakhir diperbarui: 2026-09-18
+Terakhir diperbarui: 2026-09-19
 
 ---
 
@@ -1086,6 +1086,83 @@ File yang diubah sesi ini (lanjutan): **hanya** `frontend/js/app.js`.
 Prototipe grid 2-kolom (`prototype_pdf_portrait_grid.html`) sudah TIDAK
 dipakai lagi (digantikan pendekatan 1-baris-70/30 ini), dibiarkan di
 project sebagai riwayat diskusi saja.
+
+### 2026-09-19 — Kehadiran dikelompokkan+fade, 2-tab UI, noindex, login lebih cepat
+
+User bilang aplikasi sudah bagus & berjalan baik, minta beberapa perbaikan
+kecil:
+
+**1. Kehadiran di PDF: dikelompokkan per status + efek fade (bukan hitung tinggi)**
+- Sebelumnya: daftar "NIS — Nama (Status)" 1 baris per siswa, tinggi
+  dihitung persis dari jumlah baris (bikin baris sesi jadi tidak
+  terprediksi kalau banyak yang tidak hadir).
+- Sekarang: dikelompokkan per status — `Sakit (3): Andre, Dimas, Farhan`,
+  `Izin (2): Tiara, Vany`, `Alpa (1): Rosi` — lalu baris total tetap
+  `Tidak Hadir 5 · Hadir 25 dari 30 siswa` di posisi TETAP di bawah.
+- Kolom kanan (Kehadiran) sekarang punya **tinggi TETAP** (konstanta
+  `PDF_KEHADIRAN_KANAN_TINGGI`, tidak lagi dihitung dari isi) — kalau
+  daftar nama kepanjangan, dipotong lalu diberi **efek fade** (`_pdfEfekFade`,
+  beberapa strip putih ditumpuk pakai `doc.GState({opacity:...})`, dengan
+  fallback penutup polos kalau versi jsPDF tidak dukung GState) alih-alih
+  bikin baris makin tinggi. Baris "Tidak Hadir · Hadir dari N siswa" SELALU
+  di posisi tetap, tidak pernah ikut terpotong.
+- File: `frontend/js/app.js` (`_pdfUkurBarisSesi`, `_pdfGambarKehadiranKanan`
+  baru, `_pdfEfekFade` baru; `_pdfWarnaKehadiran` lama dihapus karena sudah
+  tidak dipakai).
+
+**2. UI diubah jadi 2-tab: "daftar jurnal" vs "export mingguan"**
+- Sebelumnya kartu Export PDF/Prompt AI nyempil di tengah/bawah halaman
+  daftar jurnal harian (atas-bawah, dinilai user membingungkan).
+- Sekarang 3 halaman (Jurnal Saya/Guru, Jurnal Kelas/Wali Kelas, Admin
+  Jurnal Guru) masing-masing punya **2 tab terpisah** pakai komponen baru
+  `subtabBarHtml()`/`bindSubtabBar()` (CSS baru `.subtab-bar`/`.subtab-btn`
+  di `app.html`, segmented-control 2 pilihan):
+  - Guru: **Jurnal Saya** | **Export Mingguan**
+  - Wali Kelas: **Jurnal Kelas** | **Export Mingguan**
+  - Admin: **Jurnal Guru** | **Export Mingguan**
+- Tab dikontrol lewat parameter route `tab` (`'list'`|`'export'`, default
+  `'list'`) — konsisten dengan pola parameter route yang sudah ada
+  (`page`, `tanggal`, dst). Klik ganti tab pakai `navigate(route, params,
+  {isBack:true})` supaya TIDAK menambah entry baru ke `navStack` (tombol
+  "Kembali" tetap keluar dari halaman, bukan bolak-balik antar tab).
+- `viewJurnalSaya`/`viewJurnalKelas`/`viewAdminJurnal` masing-masing
+  dipecah jadi fungsi render terpisah per tab (`viewJurnalSayaExport`,
+  `viewJurnalKelasExport`, `renderAdminJurnalExportTab`/`renderAdminJurnalListTab`)
+  — TIDAK ada perubahan logic fetch/cache/binding di baliknya, murni
+  dipindah lokasi render + dipisah tab.
+- File: `frontend/app.html` (CSS `.subtab-bar`), `frontend/js/app.js`.
+
+**3. Aplikasi tidak boleh diindeks mesin pencari**
+- `frontend/robots.txt` baru: `Disallow: /` untuk semua user-agent.
+- `<meta name="robots" content="noindex, nofollow, noarchive">` ditambah
+  ke SEMUA halaman HTML (`app.html`, `index.html`, `login.html`,
+  `jadwal-publik.html`) — dipasang keduanya (robots.txt + meta tag) sesuai
+  praktik standar, supaya tetap aman walau ada crawler yang mengabaikan
+  robots.txt atau menemukan URL dari link eksternal.
+
+**4. Optimasi kecepatan proses login**
+- Ditemukan: `actionLogin` (`Auth.gs`) sebelumnya melakukan **3 panggilan
+  Sheets API sinkron** per login — (a) full read mentah `03_USER` (bypass
+  cache) untuk cari baris user, (b) 1 write `setValue()` update kolom
+  `last_login`, (c) 1 write `appendRow()` untuk `writeLog`. Dicek:
+  `last_login` **TIDAK PERNAH dibaca/ditampilkan di manapun** (frontend
+  maupun backend lain) — murni ditulis, tidak berguna. Dihapus, sehingga
+  login sekarang cukup **1 write** (writeLog, untuk audit trail — timestamp
+  login tetap tercatat di 13_LOG). Ini optimasi paling signifikan &
+  paling aman (tidak ada fitur yang hilang, tidak ada UI yang bergantung
+  pada `last_login`).
+- File: `apps-script/Auth.gs`.
+
+**Status:** semua lolos `node --check`, HTML div/brace balance OK.
+**Belum dites render/deploy sungguhan** — terutama perlu dicek: efek fade
+di kolom kehadiran (visual, cek `doc.GState` benar-benar bekerja di jsPDF
+2.5.1 yang dipakai — sudah dicek lewat web search ada contoh kerja persis
+pola yang sama, tapi belum dites langsung di PDF asli), tampilan 2-tab di
+3 halaman, dan perasaan kecepatan login setelah fix.
+
+File yang diubah sesi ini: `apps-script/Auth.gs`, `frontend/app.html`,
+`frontend/js/app.js`, file baru `frontend/robots.txt`. Semua 4 file HTML
+frontend mendapat 1 baris meta tag noindex.
 
 ---
 

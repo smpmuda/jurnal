@@ -13,6 +13,18 @@ jangan lanjut ke langkah berikutnya kalau verifikasi gagal.
 > 4. Timpa ulang seluruh isi folder `frontend/` di GitHub, termasuk file baru `js/cache.js`
 > 5. **Test WAJIB**: jalankan skenario C8.9 (test cache & trigger `onEdit`) — ini fitur baru yang paling berisiko kalau ada yang tidak sesuai harapan
 
+> **CATATAN UPDATE 2026-09-19 (kehadiran dikelompokkan+fade, 2-tab UI, noindex, login lebih cepat):**
+> - Timpa `apps-script/Auth.gs`, `frontend/app.html`, `frontend/js/app.js`; tambahkan file baru
+>   `frontend/robots.txt` di root GitHub Pages (sejajar dengan `index.html`).
+> - Test login: rasakan apakah lebih cepat dari sebelumnya (2 dari 3 Sheets API call dihapus).
+> - Test tab: buka Jurnal Saya (Guru) / Jurnal Kelas (Wali Kelas) / Admin → Jurnal Guru — pastikan
+>   ada 2 tab di atas ("Jurnal ..." dan "Export Mingguan"), klik-klik ganti tab, pastikan tombol
+>   "Kembali" (kalau ada) tetap keluar halaman bukan malah balik ke tab sebelumnya.
+> - Test kehadiran PDF: export minggu yang ada sesi dengan BANYAK siswa tidak hadir (5+ dalam 1
+>   sesi) — cek formatnya jadi "Sakit (N): nama, nama..." per status, dan kalau daftarnya kepanjangan
+>   ada efek pudar/fade di ujung kotak (bukan kotak jadi makin tinggi atau teks tumpang tindih).
+> - Cek `https://<domain-github-pages-anda>/robots.txt` bisa diakses dan isinya `Disallow: /`.
+
 > **CATATAN UPDATE 2026-09-18 lanjutan (layout PDF v2 — 1 baris/sesi, 70/30, portrait):**
 > - Timpa **hanya** `frontend/js/app.js`.
 > - Cek: PDF sekarang portrait A4 margin sempit, header rata tengah, 1 sesi = 1 baris penuh

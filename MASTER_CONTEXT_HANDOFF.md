@@ -1,6 +1,6 @@
 # MASTER CONTEXT HANDOFF — Jurnal Mengajar
 **SMP Muhammadiyah 2 Cilacap**
-Diperbarui: 2026-09-18 — RESUME UNTUK CHAT BARU
+Diperbarui: 2026-09-19 — RESUME UNTUK CHAT BARU
 
 ---
 
@@ -18,30 +18,29 @@ proyek). Frontend juga sebaiknya konfirmasi kalau perubahan cukup besar.
 
 ## STATUS SAAT INI: kode sudah selesai & lolos cek syntax, BELUM di-deploy/dites user
 
-**[PALING BARU 2026-09-18 lanjutan]** Setelah lihat prototipe grid
-2-kolom, user kasih feedback: terlalu banyak ruang kosong. Diganti jadi
-**1 baris penuh per sesi** (bukan 2 kartu berdampingan), dalam baris itu
-dibagi kolom kiri 70% (materi+catatan) / kanan 30% (kehadiran), tinggi
-baris dihitung DINAMIS dari isi — user minta LANGSUNG diterapkan ke kode
-PDF asli (skip prototipe lagi). **SUDAH DIKERJAKAN & SELESAI** — lihat
-`Master_Progress.md` bagian **"2026-09-18 (lanjutan) — Layout PDF v2
-LANGSUNG diterapkan"**. Hanya `frontend/js/app.js` yang berubah (mesin
-PDF, fungsi `_bangunRekapPdfKartu` cs.) — interface `buildRekapPdfGuru`/
-`buildRekapPdfKelas` tidak berubah, jadi tidak ada file lain yang perlu
-disentuh. Prototipe HTML grid 2-kolom sebelumnya (`prototype_pdf_portrait_grid.html`)
-sudah TIDAK relevan lagi (sudah digantikan pendekatan baru ini) — jangan
-bingung kalau masih terlihat di folder project, itu cuma riwayat diskusi.
+**[PALING BARU 2026-09-19]** User bilang aplikasi sudah OK, minta 4
+perbaikan kecil — SEMUA SUDAH DIKERJAKAN & SELESAI, lihat `Master_Progress.md`
+bagian **"2026-09-19 — Kehadiran dikelompokkan+fade, 2-tab UI, noindex,
+login lebih cepat"** untuk detail lengkap:
+1. Kehadiran di PDF dikelompokkan per status (Sakit/Izin/Alpa: nama-nama)
+   + efek fade kalau kepanjangan, kolom kanan sekarang tinggi TETAP
+   (tidak dihitung dari isi lagi).
+2. 3 halaman (Jurnal Saya, Jurnal Kelas, Admin Jurnal Guru) diubah jadi
+   **2-tab**: daftar jurnal | export mingguan — sebelumnya digabung
+   atas-bawah (dianggap membingungkan).
+3. `robots.txt` + meta `noindex` di semua halaman — supaya tidak
+   terindeks mesin pencari.
+4. Login dipercepat — hapus 2 dari 3 Sheets API call yang sebelumnya
+   terjadi tiap login (update kolom `last_login` yang ternyata tidak
+   pernah dipakai di manapun).
 
-**Belum dites render sungguhan** (di sini tidak ada browser) — hal
-PERTAMA yang perlu dicek di chat baru: apakah user sudah coba export PDF
-setelah deploy, terutama sesi dengan materi mendekati 700 karakter
-(kemungkinan gagal: teks kepotong/tumpang-tindih dengan kolom kehadiran
-atau baris sesi berikutnya — kalau ada laporan begini, cek dulu apakah
-estimasi `lineH`/`fontSize` di `_pdfUkurBarisSesi` perlu diperbesar
-sedikit, sebelum mengubah struktur lagi).
+File yang berubah sesi ini: `apps-script/Auth.gs`, `frontend/app.html`,
+`frontend/js/app.js`, file baru `frontend/robots.txt`.
 
-Bagian batas karakter 700/200 (frontend+backend validasi) dari sesi
-2026-09-18 sebelumnya (di atas bagian ini) TIDAK berubah, masih berlaku.
+**Belum dites render/deploy sungguhan.** Hal PERTAMA yang perlu dicek di
+chat baru: apakah user sudah coba deploy & kasih feedback soal 4 hal di
+atas — terutama efek fade di kolom kehadiran PDF (pakai `doc.GState`,
+belum pernah dites di PDF asli) dan tampilan 2-tab di 3 halaman.
 
 **1. Bug ditemukan & diperbaiki** — `apps-script/Jurnal.gs`,
 `actionUpdateJurnal` (~baris 190): sisa 1 titik pola lama
@@ -62,18 +61,18 @@ sisa isAktif di edit-jurnal + Fitur Export Rekap Jurnal Mingguan (PDF)"**
 
 ## YANG HARUS USER LAKUKAN SELANJUTNYA (aksi pertama di chat baru)
 
-1. Timpa `frontend/js/app.js` di GitHub Pages (satu-satunya file yang
-   berubah untuk redesain layout PDF v2 — portrait, 1 baris/sesi, 70/30).
-2. Test export PDF di ketiga tempat (Jurnal Saya, Jurnal Kelas, Admin→Jurnal
-   Guru): cek portrait A4 margin sempit, header rata tengah, tiap sesi 1
-   baris penuh (bukan 2 kartu berdampingan), kolom kiri materi+catatan /
-   kolom kanan kehadiran, dan yang PALING PENTING — coba minimal 1 sesi
-   dengan materi mendekati 700 karakter untuk pastikan teksnya tidak
-   terpotong atau tumpang tindih.
-3. Kalau belum sempat deploy update sebelumnya di hari yang sama (batas
-   karakter 700/200): timpa juga `apps-script/Jurnal.gs`.
-4. Kalau belum deploy update 2026-09-17 (fix nama siswa + fix test palsu):
-   timpa juga `apps-script/TestSuite.gs`.
+1. Timpa `apps-script/Auth.gs` (login lebih cepat) + `frontend/app.html`
+   (CSS tab baru + meta noindex) + `frontend/js/app.js` (kehadiran
+   dikelompokkan+fade, 2-tab UI) + tambahkan file baru `frontend/robots.txt`
+   di root GitHub Pages.
+2. Deploy Apps Script: Manage deployments → Edit → New version → Deploy.
+3. Test: (a) login — apakah terasa lebih cepat, (b) buka Jurnal Saya/Jurnal
+   Kelas/Admin Jurnal Guru — pastikan tab "Jurnal ..." | "Export Mingguan"
+   muncul & berfungsi, (c) export PDF untuk minggu dengan banyak siswa
+   tidak hadir (5+ di 1 sesi) — cek kehadiran dikelompokkan per status
+   dengan benar & kalau kepanjangan ada efek fade (bukan box makin tinggi
+   / teks tumpang tindih), (d) cek `https://<domain-github-pages>/robots.txt`
+   bisa diakses & isinya `Disallow: /`.
 4. Jalankan `runFullTest()` di Apps Script editor — pastikan section 7
    ("REKAP JURNAL MINGGUAN") semua PASS.
 5. Test manual di browser sungguhan (BELUM PERNAH dicoba end-to-end oleh

@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow, noarchive">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -261,6 +262,20 @@
   .day-tab.active { background: var(--navy); border-color: var(--navy); color: white; }
 
   .filter-card { background: var(--white); border: 1px solid var(--gray-200); border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 16px; margin-bottom: 16px; }
+
+  /* [BARU 2026-09-19] Sub-tab 2 segmen — dipakai buat pisah "daftar jurnal"
+     vs "export mingguan" (Jurnal Saya, Jurnal Kelas, Admin Jurnal Guru)
+     supaya tidak lagi campur atas-bawah dalam 1 halaman panjang. */
+  .subtab-bar {
+    display: flex; gap: 4px; background: var(--gray-100); border-radius: var(--radius-lg);
+    padding: 4px; margin-bottom: 16px;
+  }
+  .subtab-btn {
+    flex: 1; border: none; background: transparent; color: var(--gray-600);
+    font-size: 13px; font-weight: 700; padding: 10px 8px; border-radius: 10px;
+    transition: background .12s ease, color .12s ease, box-shadow .12s ease;
+  }
+  .subtab-btn.active { background: var(--white); color: var(--blue); box-shadow: var(--shadow); }
   .chip-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
   .chip-row::-webkit-scrollbar { display: none; }
   .chip {
