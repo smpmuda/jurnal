@@ -608,43 +608,28 @@ function _pdfBlokLabel(doc, x, y, labelTeks, bodyLines, lineH, fontSizeBody) {
 
 // ── Ukur & gambar 1 BARIS sesi (penuh lebar, dalam = kiri 70% / kanan 30%) ──
 
-// [REDESAIN 2026-09-20 — permintaan user] Sebelumnya kolom Kehadiran
-// dibatasi TINGGI TETAP (konstanta), lepas dari tinggi kolom Materi/
-// Catatan di sebelahnya. User minta pendekatan yang lebih pas: "auto max"
-// = tinggi TEORITIS kalau Materi persis 700 karakter + Catatan persis 200
-// karakter (batas maksimal yang sudah ditegakkan di form input & backend).
-// Itu jadi PLAFON tinggi baris. Untuk baris yang materinya lebih pendek
-// dari batas maksimal, baris BOLEH tetap lebih pendek — TAPI kalau daftar
-// siswa tidak hadir butuh ruang lebih banyak, baris boleh "meregang" naik
-// sampai plafon itu supaya daftarnya muat penuh (tidak usah di-blur kalau
-// memang masih di bawah plafon). Fade/blur HANYA dipakai kalau daftar
-// tidak hadir masih lebih panjang dari plafon itu sendiri.
+// [REDESAIN 2026-09-21 — koreksi dari user] Percobaan sebelumnya (kolom
+// Kehadiran dibatasi plafon = tinggi teoritis materi 700 + catatan 200
+// karakter) TERNYATA MASIH KURANG: kenyataan di lapangan, jumlah siswa
+// tidak hadir TIDAK ADA HUBUNGANNYA dengan panjang materi/catatan yang
+// ditulis guru — bisa saja materi cuma 70 karakter tapi yang tidak hadir
+// belasan siswa (atau sebaliknya, materi 700 karakter tapi semua hadir).
+// Menyamakan plafon kehadiran ke tinggi materi/catatan artifisial &
+// gampang kepotong padahal ruang halaman masih longgar (baris lain di
+// sekitarnya sudah pasti lebih pendek, apalagi 1 baris = 1 sesi penuh
+// lebar, TIDAK ada lagi masalah "2 kartu berdampingan beda tinggi" dari
+// desain sebelum-sebelumnya). Jadi SEKARANG: kolom Kehadiran BEBAS
+// tumbuh sepenuhnya sesuai jumlah nama yang perlu ditampilkan (SEMUA
+// nama, bukan potongan), baris mengikuti kolom mana pun yang lebih
+// tinggi (Materi+Catatan ATAU Kehadiran). Blur/fade cuma jadi katup
+// pengaman TERAKHIR untuk kasus benar-benar ekstrem (lihat
+// PDF_KEHADIRAN_MAKS_ABSOLUT) yang nyaris tidak pernah kena di pemakaian
+// normal.
 var PDF_KEHADIRAN_LABEL_H = 11;
 var PDF_KEHADIRAN_TOTAL_H = 13;
+var PDF_KEHADIRAN_MAKS_ABSOLUT = 420; // katup pengaman mutlak, BUKAN terkait materi — cuma jaga-jaga 1 baris tidak sampai merusak tata letak halaman kalau suatu saat ada puluhan siswa tidak hadir sekaligus dalam 1 sesi
 
-// Teks contoh sepanjang tepat batas karakter (dipotong ke panjang pas),
-// dipakai SEKALI per PDF untuk mengukur tinggi teoritis maksimal lewat
-// wrapping asli jsPDF (bukan tebakan char-per-baris manual) — supaya
-// akurat mengikuti font/ukuran yang benar-benar dipakai.
-var PDF_TEKS_UKUR_DASAR = 'Kegiatan pembelajaran hari ini membahas materi dengan diskusi kelompok, tanya jawab, dan latihan soal bersama siswa di kelas. ';
-function _pdfTeksUkurSepanjang(n) {
-  var s = '';
-  while (s.length < n) s += PDF_TEKS_UKUR_DASAR;
-  return s.slice(0, n);
-}
-
-// Tinggi teoritis kolom kiri (Materi+Catatan) kalau keduanya PERSIS di
-// batas maksimal karakter — dihitung SEKALI per PDF (lebarKiri sama utk
-// semua baris), dipakai sebagai plafon tinggi baris.
-function _pdfTinggiKiriMaksTeoritis(doc, lebarKiri) {
-  doc.setFont(undefined, 'normal'); doc.setFontSize(8.3);
-  var lineH = 10.3;
-  var mLines = doc.splitTextToSize(_pdfTeksUkurSepanjang(BATAS_KARAKTER_RINGKASAN), lebarKiri);
-  var cLines = doc.splitTextToSize(_pdfTeksUkurSepanjang(BATAS_KARAKTER_CATATAN), lebarKiri);
-  return (9.5 + mLines.length * lineH + 5) + (9.5 + cLines.length * lineH + 5);
-}
-
-function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan, tinggiMaksAuto) {
+function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan) {
   var lineH = 10.3;
   doc.setFont(undefined, 'normal'); doc.setFontSize(8.3);
   var materiLines = doc.splitTextToSize(item.ringkasan || '-', lebarKiri);
@@ -663,13 +648,12 @@ function _pdfUkurBarisSesi(doc, item, lebarKiri, lebarKanan, tinggiMaksAuto) {
     totalBarisKanan += doc.splitTextToSize(teks, lebarKanan).length;
   });
   var tinggiKananPenuh = PDF_KEHADIRAN_LABEL_H + totalBarisKanan * 9 + PDF_KEHADIRAN_TOTAL_H;
+  var tinggiKananDipakai = Math.min(tinggiKananPenuh, PDF_KEHADIRAN_MAKS_ABSOLUT);
 
-  // Plafon = tinggi teoritis maks (atau tinggi kiri aktual kalau entah
-  // kenapa lebih tinggi dari perkiraan teoritis — jaga-jaga, materi tidak
-  // boleh pernah ikut terpotong).
-  var plafon = Math.max(tinggiKiri, tinggiMaksAuto);
-  var tinggiIsi = Math.min(Math.max(tinggiKiri, tinggiKananPenuh), plafon);
-  var kananTerpotong = tinggiKananPenuh > tinggiIsi + 0.01;
+  // Baris mengikuti kolom mana pun yang lebih tinggi — TIDAK ADA plafon
+  // yang terkait materi/catatan lagi.
+  var tinggiIsi = Math.max(tinggiKiri, tinggiKananDipakai);
+  var kananTerpotong = tinggiKananPenuh > tinggiKananDipakai + 0.01;
 
   var chipRowH = 12 + 6;
   var padAtasBawah = 8 * 2;
@@ -876,7 +860,6 @@ function _bangunRekapPdfKartu(opts) {
   }
 
   var groups = _pdfKelompokkanPerHari(items);
-  var tinggiMaksAuto = _pdfTinggiKiriMaksTeoritis(doc, lebarKiri);
 
   if (groups.length === 0) {
     pastikanRuang(36);
@@ -895,7 +878,7 @@ function _bangunRekapPdfKartu(opts) {
       y = _pdfHeaderHari(doc, marginX, y, contentW, g.hari, fmtTanggalIndo(g.tanggal), g.items.length);
 
       g.items.forEach(function(it) {
-        var uk = _pdfUkurBarisSesi(doc, it, lebarKiri, lebarKanan, tinggiMaksAuto);
+        var uk = _pdfUkurBarisSesi(doc, it, lebarKiri, lebarKanan);
         pastikanRuang(uk.height + 6);
         _pdfGambarBarisSesi(doc, marginX, y, contentW, it, opts.chip2Getter(it), uk);
         y += uk.height + 6;
