@@ -909,6 +909,213 @@ function kehadiranSingkat(k) {
   return k.hadir + 'H · ' + k.sakit + 'S · ' + k.izin + 'I · ' + k.alpa + 'A';
 }
 
+// ══════════════════════════════════════════════════════════════
+// [BARU 2026-09-21] Export Jadwal Mingguan (Guru & Kelas) → PDF
+//
+// Beda total dari mesin PDF rekap jurnal di atas — ini timetable klasik:
+// kolom = hari (Senin-Sabtu), baris = jam ke-, tiap sel = mapel + pihak
+// lain (kelas untuk jadwal guru, guru untuk jadwal kelas), diwarnai per
+// mapel supaya "hidup" dan gampang di-scan sekali lihat (bukan cuma teks
+// polos). Landscape A4 — timetable mingguan jauh lebih lebar dari tinggi.
+//
+// Sumber data: getJadwalPerGuru (sudah ada) & getJadwalPerKelas (baru,
+// Data.gs) — bentuk responsnya SAMA (jadwal_per_hari per hari, tiap item
+// {mapel_id, nama_mapel, jam_ids, jam_label, + nama_kelas ATAU nama_guru}),
+// jadi mesin gambarnya bisa 1 dipakai bersama.
+// ══════════════════════════════════════════════════════════════
+
+var PDF_PALET_MAPEL = [
+  { bg: [219, 234, 254], fg: [29, 78, 216] },   // biru
+  { bg: [220, 252, 231], fg: [21, 128, 61] },   // hijau
+  { bg: [255, 237, 213], fg: [194, 65, 12] },   // oranye
+  { bg: [237, 233, 254], fg: [109, 40, 217] },  // ungu
+  { bg: [255, 228, 230], fg: [190, 18, 60] },   // merah muda
+  { bg: [204, 251, 241], fg: [15, 118, 110] },  // teal
+  { bg: [254, 249, 195], fg: [133, 77, 14] },   // kuning
+  { bg: [252, 231, 243], fg: [190, 24, 93] },   // pink
+  { bg: [224, 242, 254], fg: [3, 105, 161] },   // sky
+  { bg: [236, 252, 203], fg: [77, 124, 15] },   // lime
+];
+
+// warnaMap: object kosong {} dilewatkan pemanggil, dipakai sebagai memo
+// supaya 1 mapel selalu dapat warna yang SAMA di seluruh PDF (bukan acak
+// ulang tiap dipanggil).
+function _pdfWarnaMapel(warnaMap, mapelId) {
+  if (!warnaMap[mapelId]) {
+    var i = Object.keys(warnaMap).length % PDF_PALET_MAPEL.length;
+    warnaMap[mapelId] = PDF_PALET_MAPEL[i];
+  }
+  return warnaMap[mapelId];
+}
+
+var PDF_HARI_URUTAN = ['SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUMAT', 'SABTU'];
+var PDF_HARI_SINGKAT = { SENIN: 'SENIN', SELASA: 'SELASA', RABU: 'RABU', KAMIS: 'KAMIS', JUMAT: 'JUMAT', SABTU: 'SABTU' };
+
+// opts: { data (jadwal_per_hari), namaSekolah, judul, pihakLabel, pihakNama, chip2Getter, namaFile }
+function _pdfBangunGridJadwal(opts) {
+  var doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  var namaSekolah = (appConfig && appConfig.nama_sekolah) ? appConfig.nama_sekolah : 'SMP Muhammadiyah 2 Cilacap';
+  var pageW = doc.internal.pageSize.getWidth();
+  var pageH = doc.internal.pageSize.getHeight();
+  var marginX = 28, marginTop = 24, marginBottom = 30;
+  var contentW = pageW - marginX * 2;
+
+  var y = marginTop;
+  y = _pdfHeaderDokumen(doc, marginX, y, contentW, namaSekolah, opts.judul, opts.pihakLabel + ': ' + opts.pihakNama);
+
+  // Susun data per hari + cari jam maksimal SESUNGGUHNYA dari isi jadwal
+  // (bukan dari config) — supaya grid selalu pas dengan data yang ada.
+  var perHari = {};
+  var jamMaks = 0;
+  var warnaMap = {};
+  (opts.data || []).forEach(function(hb) {
+    perHari[hb.hari] = hb.jadwal || [];
+    (hb.jadwal || []).forEach(function(item) {
+      (item.jam_ids || []).forEach(function(jid) {
+        var n = parseInt(String(jid).replace('J', ''), 10);
+        if (n > jamMaks) jamMaks = n;
+      });
+      _pdfWarnaMapel(warnaMap, item.mapel_id); // daftarkan warna dari awal, supaya urutan warna konsisten
+    });
+  });
+  if (jamMaks < 1) jamMaks = 8;
+
+  // Grid: kolom "Jam" (kiri) + 6 kolom hari
+  var kolJamW = 40;
+  var kolHariW = (contentW - kolJamW) / PDF_HARI_URUTAN.length;
+  var headerRowH = 22;
+  var ruangTersedia = pageH - y - marginBottom - 44; // 44pt disisakan utk legenda mapel di bawah grid
+  var jamRowH = Math.max(20, Math.min(36, (ruangTersedia - headerRowH) / jamMaks));
+
+  var gridTop = y;
+  var gridLeft = marginX;
+  var gridBottom = gridTop + headerRowH + jamMaks * jamRowH;
+
+  // Header grid (band gelap): "JAM" + nama hari
+  doc.setFillColor(PDF_WARNA.navy[0], PDF_WARNA.navy[1], PDF_WARNA.navy[2]);
+  doc.rect(gridLeft, gridTop, contentW, headerRowH, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(undefined, 'bold'); doc.setFontSize(8);
+  doc.text('JAM', gridLeft + kolJamW / 2, gridTop + headerRowH / 2 + 3, { align: 'center' });
+  PDF_HARI_URUTAN.forEach(function(h, i) {
+    var hx = gridLeft + kolJamW + i * kolHariW;
+    doc.text(PDF_HARI_SINGKAT[h], hx + kolHariW / 2, gridTop + headerRowH / 2 + 3, { align: 'center' });
+  });
+  doc.setTextColor(0, 0, 0);
+
+  // Kolom "Jam" (nomor 1..jamMaks) di kiri
+  for (var j = 1; j <= jamMaks; j++) {
+    var ry = gridTop + headerRowH + (j - 1) * jamRowH;
+    doc.setFillColor(PDF_WARNA.abuBg[0], PDF_WARNA.abuBg[1], PDF_WARNA.abuBg[2]);
+    doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+    doc.rect(gridLeft, ry, kolJamW, jamRowH, 'FD');
+    doc.setFont(undefined, 'bold'); doc.setFontSize(8.5);
+    doc.setTextColor(PDF_WARNA.abuTeks[0], PDF_WARNA.abuTeks[1], PDF_WARNA.abuTeks[2]);
+    doc.text(String(j), gridLeft + kolJamW / 2, ry + jamRowH / 2 + 3, { align: 'center' });
+    doc.setTextColor(0, 0, 0);
+  }
+
+  // Garis dasar grid kosong (border tiap sel) per hari, digambar dulu di
+  // BAWAH supaya sel jadwal berwarna di atas garis-garis ini kelihatan rapi.
+  PDF_HARI_URUTAN.forEach(function(h, i) {
+    var hx = gridLeft + kolJamW + i * kolHariW;
+    doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+    doc.setFillColor(255, 255, 255);
+    doc.rect(hx, gridTop + headerRowH, kolHariW, jamMaks * jamRowH, 'FD');
+    for (var jj = 1; jj < jamMaks; jj++) {
+      var lineY = gridTop + headerRowH + jj * jamRowH;
+      doc.line(hx, lineY, hx + kolHariW, lineY);
+    }
+  });
+
+  // Gambar sel jadwal berwarna (1 sel bisa merentang beberapa baris jam
+  // sekaligus kalau blok jamnya berurutan, mis. "Jam 2-3" → 1 sel tinggi
+  // 2 baris, bukan 2 sel terpisah — ini yang bikin tampilannya seperti
+  // timetable sungguhan, bukan daftar).
+  PDF_HARI_URUTAN.forEach(function(h, i) {
+    var hx = gridLeft + kolJamW + i * kolHariW;
+    (perHari[h] || []).forEach(function(item) {
+      var nums = (item.jam_ids || []).map(function(id) { return parseInt(String(id).replace('J', ''), 10); }).sort(function(a, b) { return a - b; });
+      if (!nums.length) return;
+      var jamMin = nums[0], jamMax = nums[nums.length - 1];
+      if (jamMin > jamMaks) return;
+      var cellY = gridTop + headerRowH + (jamMin - 1) * jamRowH;
+      var cellH = (Math.min(jamMax, jamMaks) - jamMin + 1) * jamRowH;
+      var warna = _pdfWarnaMapel(warnaMap, item.mapel_id);
+
+      doc.setFillColor(warna.bg[0], warna.bg[1], warna.bg[2]);
+      doc.roundedRect(hx + 2, cellY + 2, kolHariW - 4, cellH - 4, 3, 3, 'F');
+
+      var pihak2 = opts.chip2Getter(item);
+      doc.setTextColor(warna.fg[0], warna.fg[1], warna.fg[2]);
+      doc.setFont(undefined, 'bold'); doc.setFontSize(7.3);
+      var mapelLines = doc.splitTextToSize(item.nama_mapel || '-', kolHariW - 10);
+      var maksBarisMapel = Math.max(1, Math.floor((cellH - 14) / 9));
+      if (mapelLines.length > maksBarisMapel) mapelLines = mapelLines.slice(0, maksBarisMapel);
+      var totalTinggiTeks = mapelLines.length * 9 + (pihak2 ? 9 : 0);
+      var ty = cellY + cellH / 2 - totalTinggiTeks / 2 + 7;
+      doc.text(mapelLines, hx + kolHariW / 2, ty, { align: 'center' });
+
+      if (pihak2) {
+        doc.setFont(undefined, 'normal'); doc.setFontSize(6.6);
+        var pihak2Lines = doc.splitTextToSize(pihak2, kolHariW - 10);
+        doc.text(pihak2Lines[0], hx + kolHariW / 2, ty + mapelLines.length * 9 + 2, { align: 'center' });
+      }
+      doc.setTextColor(0, 0, 0);
+    });
+  });
+
+  // Legenda warna mapel di bawah grid
+  var legendY = gridBottom + 14;
+  doc.setFont(undefined, 'bold'); doc.setFontSize(7);
+  doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+  doc.text('MATA PELAJARAN', gridLeft, legendY);
+  doc.setTextColor(0, 0, 0);
+  var lx = gridLeft, ly = legendY + 12;
+  var namaMapelById = {};
+  (opts.data || []).forEach(function(hb) {
+    (hb.jadwal || []).forEach(function(item) { namaMapelById[item.mapel_id] = item.nama_mapel; });
+  });
+  Object.keys(warnaMap).forEach(function(mapelId) {
+    var warna = warnaMap[mapelId];
+    var teks = namaMapelById[mapelId] || mapelId;
+    doc.setFont(undefined, 'normal'); doc.setFontSize(7);
+    var w = doc.getTextWidth(teks) + 18;
+    if (lx + w > gridLeft + contentW) { lx = gridLeft; ly += 13; }
+    doc.setFillColor(warna.bg[0], warna.bg[1], warna.bg[2]);
+    doc.roundedRect(lx, ly - 7, 10, 10, 2, 2, 'F');
+    doc.setTextColor(PDF_WARNA.abuTeks[0], PDF_WARNA.abuTeks[1], PDF_WARNA.abuTeks[2]);
+    doc.text(teks, lx + 14, ly + 1);
+    doc.setTextColor(0, 0, 0);
+    lx += w + 8;
+  });
+
+  _rekapPdfBeriNomorHalaman(doc);
+  doc.save(opts.namaFile);
+}
+
+function buildJadwalGuruPdf(data) {
+  _pdfBangunGridJadwal({
+    data: data.jadwal_per_hari,
+    judul: 'Jadwal Mengajar Mingguan',
+    pihakLabel: 'Guru',
+    pihakNama: data.nama_guru,
+    chip2Getter: function(it) { return it.nama_kelas; },
+    namaFile: 'Jadwal-Guru-' + String(data.nama_guru || '').replace(/[^a-zA-Z0-9]+/g, '-') + '.pdf',
+  });
+}
+
+function buildJadwalKelasPdf(data) {
+  _pdfBangunGridJadwal({
+    data: data.jadwal_per_hari,
+    judul: 'Jadwal Pelajaran Kelas',
+    pihakLabel: 'Kelas',
+    pihakNama: data.nama_kelas,
+    chip2Getter: function(it) { return it.nama_guru; },
+    namaFile: 'Jadwal-Kelas-' + String(data.nama_kelas || '').replace(/[^a-zA-Z0-9]+/g, '-') + '.pdf',
+  });
+}
+
 // ── Salin ke clipboard + kotak fallback manual (dipakai fitur Prompt AI) ──
 
 function salinKeClipboard(teks) {
@@ -1910,6 +2117,8 @@ function renderJadwalKelasLihatShell(kelasData) {
   });
   html += '</select></div>';
 
+  html += '<button class="btn-secondary" id="btnExportJadwalKelas" type="button" style="margin:10px 0 14px"><i class="fa-solid fa-file-pdf"></i> Export PDF</button>';
+
   html += '<span class="form-label">Pilih Hari</span>';
   html += '<div class="day-tabs" id="hariTabs">';
   hariAktifList().forEach(function(h) {
@@ -1924,6 +2133,26 @@ function renderJadwalKelasLihatShell(kelasData) {
   document.getElementById('selKelas').addEventListener('change', function(e) {
     jadwalLihatState.kelas_id = e.target.value;
     loadJadwalKelasLihat();
+  });
+  document.getElementById('btnExportJadwalKelas').addEventListener('click', function() {
+    if (typeof window.jspdf === 'undefined') {
+      showToast('Library PDF gagal dimuat. Periksa koneksi internet lalu coba lagi.', true);
+      return;
+    }
+    var $btn = document.getElementById('btnExportJadwalKelas');
+    var htmlAsli = $btn.innerHTML;
+    $btn.disabled = true;
+    $btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Menyiapkan PDF...';
+    API.call('getJadwalPerKelas', { kelas_id: jadwalLihatState.kelas_id }, 'GET').then(function(res) {
+      if (!res.ok) { showToast('Gagal: ' + res.error, true); return; }
+      buildJadwalKelasPdf(res.data);
+      showToast('PDF jadwal berhasil dibuat ✓');
+    }).catch(function(e) {
+      showToast('Gagal: ' + (e && e.message ? e.message : e), true);
+    }).then(function() {
+      $btn.disabled = false;
+      $btn.innerHTML = htmlAsli;
+    });
   });
   document.querySelectorAll('#hariTabs .day-tab').forEach(function(btn) {
     btn.addEventListener('click', function() {
@@ -2314,7 +2543,8 @@ function renderAdminGuruTabs($hasil) {
     adminGuruState.activeHari = hariAktif[0] || 'SENIN';
   }
 
-  var html = '<div class="day-tabs">';
+  var html = '<button class="btn-secondary" id="btnExportJadwalGuruAdmin" type="button" style="margin-bottom:14px"><i class="fa-solid fa-file-pdf"></i> Export PDF</button>';
+  html += '<div class="day-tabs">';
   hariAktif.forEach(function(h) {
     html += '<button class="day-tab' + (h === adminGuruState.activeHari ? ' active' : '') + '" data-hari="' + h + '">'
       + capitalizeHari(h).substring(0, 3) + '</button>';
@@ -2324,6 +2554,15 @@ function renderAdminGuruTabs($hasil) {
   html += '<div id="adminGuruHariContent">' + renderAdminGuruHariContent(jadwalByHari, adminGuruState.activeHari) + '</div>';
 
   $hasil.innerHTML = html;
+
+  document.getElementById('btnExportJadwalGuruAdmin').addEventListener('click', function() {
+    if (typeof window.jspdf === 'undefined') {
+      showToast('Library PDF gagal dimuat. Periksa koneksi internet lalu coba lagi.', true);
+      return;
+    }
+    buildJadwalGuruPdf(d);
+    showToast('PDF jadwal berhasil dibuat ✓');
+  });
 
   $hasil.querySelectorAll('.day-tab').forEach(function(btn) {
     btn.addEventListener('click', function() {
@@ -2404,7 +2643,8 @@ function renderJadwalSayaGuruTabs($hasil) {
     jadwalSayaGuruState.activeHari = hariAktif[0] || 'SENIN';
   }
 
-  var html = '<div class="day-tabs">';
+  var html = '<button class="btn-secondary" id="btnExportJadwalSaya" type="button" style="margin-bottom:14px"><i class="fa-solid fa-file-pdf"></i> Export PDF</button>';
+  html += '<div class="day-tabs">';
   hariAktif.forEach(function(h) {
     html += '<button class="day-tab' + (h === jadwalSayaGuruState.activeHari ? ' active' : '') + '" data-hari="' + h + '">'
       + capitalizeHari(h).substring(0, 3) + '</button>';
@@ -2414,6 +2654,15 @@ function renderJadwalSayaGuruTabs($hasil) {
   html += '<div id="jadwalSayaGuruHariContent">' + renderAdminGuruHariContent(jadwalByHari, jadwalSayaGuruState.activeHari) + '</div>';
 
   $hasil.innerHTML = html;
+
+  document.getElementById('btnExportJadwalSaya').addEventListener('click', function() {
+    if (typeof window.jspdf === 'undefined') {
+      showToast('Library PDF gagal dimuat. Periksa koneksi internet lalu coba lagi.', true);
+      return;
+    }
+    buildJadwalGuruPdf(d);
+    showToast('PDF jadwal berhasil dibuat ✓');
+  });
 
   $hasil.querySelectorAll('.day-tab').forEach(function(btn) {
     btn.addEventListener('click', function() {
