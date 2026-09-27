@@ -1,6 +1,11 @@
 # Panduan Deploy & Uji — Jurnal Mengajar
 **SMP Muhammadiyah 2 Cilacap**
 
+> **CATATAN 2026-09-22:** File `materi-sosialisasi/Sosialisasi_Jurnal_Mengajar.pptx`
+> ditambahkan sesi ini — murni materi presentasi untuk sosialisasi ke guru/wali
+> kelas/admin, TIDAK ADA hubungannya dengan deploy aplikasi. Tidak perlu langkah
+> deploy apa pun untuk file ini, tinggal dibuka & dipresentasikan.
+
 Ikuti urutan ini persis. Setiap langkah ada cara verifikasinya sendiri —
 jangan lanjut ke langkah berikutnya kalau verifikasi gagal.
 
@@ -12,6 +17,36 @@ jangan lanjut ke langkah berikutnya kalau verifikasi gagal.
 > 3. **PENTING**: setelah deploy pertama kali dengan versi ini, buka sheet `01_CONFIG` sekali dan pastikan baris `DATA_VERSION` muncul otomatis (dibuat sendiri oleh sistem saat pertama kali ada yang mengedit sheet master data, atau saat `runFullTest()` dijalankan) — kalau setelah beberapa hari baris ini belum juga muncul, kabari untuk diperiksa
 > 4. Timpa ulang seluruh isi folder `frontend/` di GitHub, termasuk file baru `js/cache.js`
 > 5. **Test WAJIB**: jalankan skenario C8.9 (test cache & trigger `onEdit`) — ini fitur baru yang paling berisiko kalau ada yang tidak sesuai harapan
+
+> **CATATAN UPDATE 2026-09-21 lanjutan (fitur baru: Export Jadwal Mingguan Guru & Kelas → PDF):**
+> - Timpa `apps-script/Data.gs`, `apps-script/Code.gs`, `frontend/js/app.js`.
+> - Test: **Jadwal Saya** (Guru) → tombol Export PDF → cek grid timetable (hari=kolom,
+>   jam=baris, warna per mapel, legenda di bawah). Ulangi di **Admin → Jadwal Guru** (pilih
+>   guru manapun) dan **Jadwal Kelas** (halaman yang sama dipakai Guru/Wali Kelas/Admin).
+> - Cek: sesi yang jamnya berurutan (mis. "Jam 2-3") tampil sebagai 1 sel merentang, bukan
+>   2 sel terpisah. Cek legenda mapel di bawah grid tidak terpotong kalau mapelnya banyak.
+
+> **CATATAN UPDATE 2026-09-21 (kolom Kehadiran dilepas dari batas materi/catatan):**
+> - Timpa **hanya** `frontend/js/app.js`.
+> - Test: export ulang PDF untuk minggu yang sama seperti di screenshot (sesi dengan Izin 9
+>   siswa) — pastikan sekarang SEMUA nama tampil penuh, tidak terpotong lagi, berapa pun
+>   panjang materinya.
+
+> **CATATAN UPDATE 2026-09-20 lanjutan (tinggi kehadiran "auto max" dari materi+catatan, log 90 hari):**
+> - Timpa `frontend/js/app.js`, `apps-script/Utils.gs`, `apps-script/Code.gs`.
+> - **WAJIB:** buka Apps Script editor, jalankan fungsi `setupTriggers()` manual sekali (dropdown
+>   fungsi di toolbar → pilih `setupTriggers` → tombol Run) supaya trigger harian baru
+>   `cleanupLogLama` (bersihkan log >90 hari, jam 4 pagi) terdaftar. Cek menu Triggers (ikon jam
+>   di sidebar kiri Apps Script editor) untuk konfirmasi sudah muncul.
+> - Test: export PDF minggu yang campur sesi materi pendek+banyak tidak hadir dan materi
+>   panjang+sedikit tidak hadir — cek tinggi barisnya proporsional (tidak ada ruang kosong besar,
+>   dan yang masih muat tidak ikut di-blur).
+
+> **CATATAN UPDATE 2026-09-20 (fix: nama siswa tidak hadir tidak muncul sama sekali):**
+> - Timpa `apps-script/Jurnal.gs` dan `frontend/js/app.js`.
+> - Test: export ulang PDF Jurnal Kelas untuk minggu yang sebelumnya cuma menampilkan baris
+>   total tanpa nama — pastikan sekarang nama muncul dikelompokkan "Sakit (N): nama, nama...",
+>   termasuk untuk siswa yang sudah dinonaktifkan/pindah kelas.
 
 > **CATATAN UPDATE 2026-09-19 (kehadiran dikelompokkan+fade, 2-tab UI, noindex, login lebih cepat):**
 > - Timpa `apps-script/Auth.gs`, `frontend/app.html`, `frontend/js/app.js`; tambahkan file baru

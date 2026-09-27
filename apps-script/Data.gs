@@ -596,6 +596,68 @@ function actionGetJadwalPerGuru(params, session) {
   });
 }
 
+/**
+ * [BARU 2026-09-21] Jadwal 1 kelas SELAMA 1 MINGGU (Senin-Sabtu),
+ * dikelompokkan per hari — dipakai fitur Export Jadwal Kelas (PDF).
+ * Bentuk responsnya SENGAJA persis sama seperti actionGetJadwalPerGuru
+ * (jadwal_per_hari), cuma field "nama_kelas" diganti "nama_guru" per item
+ * (karena di sini kelas-nya sudah pasti 1, yang bervariasi per sesi adalah
+ * gurunya) — supaya kode PDF-nya bisa pakai pola grid yang sama persis.
+ * Tidak ada pembatasan akses (sama seperti actionGetJadwalKelasPublik yang
+ * sudah ada — jadwal kelas diperlakukan sebagai data non-sensitif di
+ * aplikasi ini, dipakai juga oleh halaman publik jadwal-publik.html).
+ */
+function actionGetJadwalPerKelas(params, session) {
+  var kelasId = String(params.kelas_id || '').trim();
+  if (!kelasId) return err('kelas_id wajib');
+
+  var tahun = configVal('TAHUN_AKTIF');
+  var jadwalKelas = readSheet('09_JADWAL').filter(function(j) {
+    return String(j.tahun_id) === tahun
+      && String(j.kelas_id) === kelasId
+      && isAktif(j.aktif);
+  });
+
+  var guruIdx = indexBy(readSheet('04_GURU'), 'guru_id');
+  var mapelIdx = indexBy(readSheet('07_MAPEL'), 'mapel_id');
+  var kelasInfo = findBy('05_KELAS', 'kelas_id', kelasId);
+
+  var hariUrutan = ['SENIN','SELASA','RABU','KAMIS','JUMAT','SABTU'];
+  var perHari = {};
+  hariUrutan.forEach(function(h) { perHari[h] = []; });
+
+  jadwalKelas.forEach(function(j) {
+    if (!perHari[j.hari]) perHari[j.hari] = [];
+    perHari[j.hari].push(j);
+  });
+
+  var result = hariUrutan.map(function(h) {
+    var blok = groupJadwalBlok(perHari[h] || []);
+    var items = blok.map(function(b) {
+      var g = guruIdx[String(b.guru_id)];
+      var m = mapelIdx[String(b.mapel_id)];
+      return {
+        guru_id:    b.guru_id,
+        nama_guru:  g ? g.nama : b.guru_id,
+        mapel_id:   b.mapel_id,
+        nama_mapel: m ? m.nama_mapel : b.mapel_id,
+        jam_ids:    b.jam_ids,
+        jam_label:  jamLabel(b.jam_ids),
+      };
+    });
+    items.sort(function(a, b) {
+      return parseInt(a.jam_ids[0].replace('J','')) - parseInt(b.jam_ids[0].replace('J',''));
+    });
+    return { hari: h, jadwal: items };
+  });
+
+  return ok({
+    kelas_id: kelasId,
+    nama_kelas: kelasInfo ? kelasInfo.nama_kelas : kelasId,
+    jadwal_per_hari: result,
+  });
+}
+
 // ── Helper: Grup jadwal jadi blok ─────────────────────────────
 
 /**
