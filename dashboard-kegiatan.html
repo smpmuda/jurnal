@@ -87,6 +87,16 @@
   .dtab:active { transform: scale(.97); }
   .dtab.active { background: var(--navy); border-color: var(--navy); color: white; }
 
+  .dweek-picker {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    background: var(--white); border-bottom: 1px solid var(--gray-200);
+  }
+  .dweek-input {
+    border: 1px solid var(--gray-200); border-radius: 10px; padding: 7px 10px;
+    font-size: 12.5px; font-family: var(--font); color: var(--gray-800); background: var(--gray-50);
+  }
+  .dweek-periode { font-size: 11.5px; color: var(--gray-400); font-weight: 600; }
+
   .container { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
 
   .dash-cache-info {
@@ -191,6 +201,11 @@
 </div>
 
 <div class="dtabs" id="dashTabs"></div>
+
+<div class="dweek-picker" id="dashMingguPicker" style="display:none">
+  <input type="date" id="dashMingguInput" class="dweek-input">
+  <div class="dweek-periode" id="dashMingguPeriode"></div>
+</div>
 
 <div class="container">
 

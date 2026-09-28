@@ -11,16 +11,26 @@
 // auth.js (Auth — sessionStorage token, namespaced per deployment),
 // api.js (API.call — wrapper fetch ke Apps Script). Endpoint baru:
 // getDashboardStats (lihat Dashboard.gs), read-only, semua role.
+// Helper todayStr/mondayOfWeek/addDaysStr disalin dari app.js (bukan
+// di-import) supaya file ini tetap 100% mandiri.
 //
-// CACHE (keputusan eksplisit user, 2026-09-26): localStorage per mode,
-// TTL beda-beda sesuai seberapa cepat data itu berubah:
-//   hari_ini    → 2 jam   (masih terus bertambah jurnalnya sepanjang hari)
-//   kemarin     → 1 hari  (praktis sudah final)
-//   minggu_lalu → 1 minggu (rentang H-7..H-1, sudah lewat semua)
+// [UBAH — 2026-09-26] Tab ke-3 semula "Minggu Lalu" (rentang tetap H-7..H-1).
+// Diganti permintaan user: date-picker mingguan PERSIS seperti pola "Export
+// Jurnal Mingguan" (pilih 1 tanggal → di-snap ke Senin-Sabtu minggu itu),
+// tapi dibatasi maksimal 90 hari (12 minggu) ke belakang dari hari ini —
+// endpoint backend (Dashboard.gs) yang menegakkan batas ini, frontend cuma
+// menampilkan validasi & batas tanggal picker senada supaya user tidak
+// perlu coba-coba.
+//
+// CACHE (keputusan eksplisit user, 2026-09-26): localStorage, TTL beda-beda
+// sesuai seberapa cepat data itu berubah:
+//   hari_ini              → 2 jam
+//   kemarin                → 1 hari
+//   minggu (custom, sudah lewat total) → 1 minggu
+//   minggu (custom, termasuk hari ini) → 2 jam (masih bisa berubah)
 // Pola cache mengikuti gaya cache.js yang sudah ada (namespaced,
-// try-catch gagal-aman, tidak pernah bikin app error kalau localStorage
-// penuh/nonaktif) — TAPI file terpisah karena cache.js khusus untuk data
-// MASTER (guru/kelas/dst), bukan data agregat dashboard ini.
+// try-catch gagal-aman) — file terpisah karena cache.js khusus data MASTER,
+// bukan data agregat dashboard ini.
 // ============================================================
 
 (function () {
@@ -29,52 +39,73 @@
 
   var session = Auth.getSession();
 
-  // ── Cache kecil khusus dashboard (localStorage, TTL per mode) ──
+  // ── Helper tanggal (salinan dari app.js, biar file ini mandiri) ──
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function addDaysStr(dateStr, n) {
+    var d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() + n);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function mondayOfWeek(dateStr) {
+    var d = new Date(dateStr + 'T00:00:00');
+    var day = d.getDay(); // 0=Minggu .. 6=Sabtu
+    var diffKeSenin = (day === 0) ? -6 : (1 - day);
+    d.setDate(d.getDate() + diffKeSenin);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function fmtTanggalIndo(tanggalStr) {
+    var bulan = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+    var d = new Date(tanggalStr + 'T00:00:00');
+    return d.getDate() + ' ' + bulan[d.getMonth()] + ' ' + d.getFullYear();
+  }
+
+  var MAKS_HARI_MUNDUR = 90; // samakan dengan DASHBOARD_MAX_HARI_MUNDUR di Dashboard.gs
+  var BATAS_MUNDUR = addDaysStr(todayStr(), -MAKS_HARI_MUNDUR);
+
+  // ── Cache kecil khusus dashboard (localStorage, TTL disimpan per-entry) ──
   var DashCache = (function () {
     var LS_PREFIX = 'jm_dashcache_' + CONFIG.STORAGE_NS + '_';
-    var TTL_MS = {
-      hari_ini:    2  * 60 * 60 * 1000,
-      kemarin:     24 * 60 * 60 * 1000,
-      minggu_lalu: 7  * 24 * 60 * 60 * 1000,
-    };
 
-    function get(mode) {
+    function get(key) {
       try {
-        var raw = localStorage.getItem(LS_PREFIX + mode);
+        var raw = localStorage.getItem(LS_PREFIX + key);
         if (!raw) return null;
         var parsed = JSON.parse(raw);
         var umur = Date.now() - parsed.cachedAt;
-        if (umur > (TTL_MS[mode] || 0)) return null; // basi
+        if (umur > parsed.ttlMs) return null; // basi
         return parsed;
       } catch (e) {
         return null;
       }
     }
 
-    function set(mode, data) {
+    function set(key, data, ttlMs) {
       try {
-        localStorage.setItem(LS_PREFIX + mode, JSON.stringify({ data: data, cachedAt: Date.now() }));
+        localStorage.setItem(LS_PREFIX + key, JSON.stringify({ data: data, cachedAt: Date.now(), ttlMs: ttlMs }));
       } catch (e) { /* penuh/nonaktif — diamkan, gagal-aman */ }
     }
 
-    function ttlLabel(mode) {
-      if (mode === 'hari_ini') return '2 jam';
-      if (mode === 'kemarin') return '1 hari';
-      return '1 minggu';
-    }
-
-    return { get: get, set: set, ttlLabel: ttlLabel };
+    return { get: get, set: set };
   })();
 
+  var TTL_2JAM  = 2  * 60 * 60 * 1000;
+  var TTL_1HARI = 24 * 60 * 60 * 1000;
+  var TTL_1MINGGU = 7 * 24 * 60 * 60 * 1000;
+
   // ── State ──
-  var MODES = ['hari_ini', 'kemarin', 'minggu_lalu'];
-  var MODE_LABEL = { hari_ini: 'Hari Ini', kemarin: 'Kemarin', minggu_lalu: 'Minggu Lalu' };
-  var activeMode = 'hari_ini';
+  var TAB_LABEL = { hari_ini: 'Hari Ini', kemarin: 'Kemarin', minggu: 'Pilih Minggu' };
+  var activeTab = 'hari_ini';
+  var mingguAnchor = todayStr(); // tanggal yang dipilih di date-picker tab "minggu"
   var chartDonut = null, chartTren = null, chartKehadiran = null;
-  var loadedData = {}; // mode -> data terakhir yang berhasil dirender
 
   // ── DOM refs ──
   var $tabs = document.getElementById('dashTabs');
+  var $mingguPicker = document.getElementById('dashMingguPicker');
+  var $mingguInput = document.getElementById('dashMingguInput');
+  var $mingguPeriode = document.getElementById('dashMingguPeriode');
   var $content = document.getElementById('dashContent');
   var $skeleton = document.getElementById('dashSkeleton');
   var $empty = document.getElementById('dashEmpty');
@@ -94,47 +125,97 @@
   }
 
   // ── Init tabs ──
-  $tabs.innerHTML = MODES.map(function (m) {
-    return '<button class="dtab' + (m === activeMode ? ' active' : '') + '" data-mode="' + m + '">' + MODE_LABEL[m] + '</button>';
+  $tabs.innerHTML = Object.keys(TAB_LABEL).map(function (m) {
+    return '<button class="dtab' + (m === activeTab ? ' active' : '') + '" data-tab="' + m + '">' + TAB_LABEL[m] + '</button>';
   }).join('');
   $tabs.querySelectorAll('.dtab').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      if (btn.dataset.mode === activeMode) return;
-      activeMode = btn.dataset.mode;
+      if (btn.dataset.tab === activeTab) return;
+      activeTab = btn.dataset.tab;
       $tabs.querySelectorAll('.dtab').forEach(function (b) { b.classList.remove('active'); });
       btn.classList.add('active');
-      showModeFromCacheOrFetch(activeMode, false);
+      $mingguPicker.style.display = (activeTab === 'minggu') ? 'flex' : 'none';
+      loadActiveTab(false);
     });
   });
 
-  $btnRefresh.addEventListener('click', function () {
-    if ($btnRefresh.classList.contains('spinning')) return;
-    showModeFromCacheOrFetch(activeMode, true);
+  // ── Date picker "Pilih Minggu" ──
+  $mingguInput.min = BATAS_MUNDUR;
+  $mingguInput.max = todayStr();
+  $mingguInput.value = mingguAnchor;
+  updateMingguPeriodeLabel();
+  $mingguInput.addEventListener('change', function () {
+    mingguAnchor = $mingguInput.value || todayStr();
+    updateMingguPeriodeLabel();
+    loadActiveTab(false);
   });
 
+  function rentangMinggu() {
+    var senin = mondayOfWeek(mingguAnchor);
+    var sabtuRaw = addDaysStr(senin, 5);
+    var selesai = sabtuRaw > todayStr() ? todayStr() : sabtuRaw;
+    return { mulai: senin, selesai: selesai };
+  }
+
+  function updateMingguPeriodeLabel() {
+    var r = rentangMinggu();
+    $mingguPeriode.textContent = 'Periode: ' + fmtTanggalIndo(r.mulai) + ' – ' + fmtTanggalIndo(r.selesai);
+  }
+
+  $btnRefresh.addEventListener('click', function () {
+    if ($btnRefresh.classList.contains('spinning')) return;
+    loadActiveTab(true);
+  });
+
+  // ── Tentukan rentang tanggal aktif + kunci cache + TTL ──
+  function rentangAktif() {
+    if (activeTab === 'hari_ini') {
+      var t = todayStr();
+      return { mulai: t, selesai: t, cacheKey: 'hari_ini', ttlMs: TTL_2JAM };
+    }
+    if (activeTab === 'kemarin') {
+      var y = addDaysStr(todayStr(), -1);
+      return { mulai: y, selesai: y, cacheKey: 'kemarin', ttlMs: TTL_1HARI };
+    }
+    // minggu (custom)
+    var r = rentangMinggu();
+    var termasukHariIni = (r.selesai === todayStr());
+    return {
+      mulai: r.mulai,
+      selesai: r.selesai,
+      cacheKey: 'minggu_' + r.mulai + '_' + r.selesai,
+      ttlMs: termasukHariIni ? TTL_2JAM : TTL_1MINGGU,
+    };
+  }
+
   // ── Load ──
-  function showModeFromCacheOrFetch(mode, forceRefresh) {
+  function loadActiveTab(forceRefresh) {
+    var r = rentangAktif();
+
+    if (r.mulai < BATAS_MUNDUR) {
+      setState('error', 'Rentang tanggal melebihi ' + MAKS_HARI_MUNDUR + ' hari (12 minggu) ke belakang. Pilih tanggal yang lebih baru.');
+      return;
+    }
+
     setState('loading');
 
     if (!forceRefresh) {
-      var cached = DashCache.get(mode);
+      var cached = DashCache.get(r.cacheKey);
       if (cached) {
-        loadedData[mode] = cached.data;
-        render(mode, cached.data, cached.cachedAt);
+        render(r, cached.data, cached.cachedAt);
         return;
       }
     }
 
     $btnRefresh.classList.add('spinning');
-    API.call('getDashboardStats', { mode: mode }, 'GET', true).then(function (res) {
+    API.call('getDashboardStats', { tanggal_mulai: r.mulai, tanggal_selesai: r.selesai }, 'GET', true).then(function (res) {
       $btnRefresh.classList.remove('spinning');
       if (!res.ok) {
         setState('error', res.error);
         return;
       }
-      DashCache.set(mode, res.data);
-      loadedData[mode] = res.data;
-      render(mode, res.data, Date.now());
+      DashCache.set(r.cacheKey, res.data, r.ttlMs);
+      render(r, res.data, Date.now());
     });
   }
 
@@ -147,8 +228,9 @@
   }
 
   // ── Render ──
-  function render(mode, data, cachedAt) {
-    if (mode !== activeMode) return; // hasil fetch tab lama yang sudah ditinggalkan
+  function render(r, data, cachedAt) {
+    var masihAktif = rentangAktif();
+    if (masihAktif.cacheKey !== r.cacheKey) return; // hasil fetch tab/tanggal lama yang sudah ditinggalkan
 
     if (!data.ringkasan || data.ringkasan.total_jadwal_sesi === 0) {
       setState('empty');
@@ -156,7 +238,7 @@
     }
     setState('ok');
 
-    renderCacheInfo(mode, cachedAt);
+    renderCacheInfo(r, cachedAt);
     renderStatCards(data.ringkasan);
     renderDonut(data.ringkasan);
     renderTren(data.tren, data.tren_tipe);
@@ -164,10 +246,11 @@
     renderGuruBelum(data.guru_belum_isi);
   }
 
-  function renderCacheInfo(mode, cachedAt) {
+  function renderCacheInfo(r, cachedAt) {
     var jam = new Date(cachedAt);
     var jamStr = jam.getHours().toString().padStart(2, '0') + ':' + jam.getMinutes().toString().padStart(2, '0');
-    $cacheInfo.textContent = 'Diperbarui pukul ' + jamStr + ' · cache ' + DashCache.ttlLabel(mode);
+    var ttlLabel = r.ttlMs >= TTL_1MINGGU ? '1 minggu' : (r.ttlMs >= TTL_1HARI ? '1 hari' : '2 jam');
+    $cacheInfo.textContent = 'Diperbarui pukul ' + jamStr + ' · cache ' + ttlLabel;
   }
 
   function animateNumber($el, target) {
@@ -218,21 +301,23 @@
     var ctx = document.getElementById('chartTren').getContext('2d');
     var labels = tren.map(function (t) { return t.label; });
     var values = tren.map(function (t) { return t.jumlah; });
+    // 'jam' (1 hari, ~12 titik) → bar; 'harian' (rentang minggu, bisa banyak titik) → line, lebih enak dibaca
+    var pakaiBar = (tipe === 'jam');
     if (chartTren) chartTren.destroy();
     chartTren = new Chart(ctx, {
-      type: tipe === 'harian' ? 'bar' : 'line',
+      type: pakaiBar ? 'bar' : 'line',
       data: {
         labels: labels,
         datasets: [{
           label: 'Jurnal',
           data: values,
           borderColor: '#2563eb',
-          backgroundColor: tipe === 'harian' ? '#93b7fb' : 'rgba(37,99,235,.12)',
-          fill: tipe !== 'harian',
+          backgroundColor: pakaiBar ? '#93b7fb' : 'rgba(37,99,235,.12)',
+          fill: !pakaiBar,
           tension: 0.35,
-          pointRadius: tipe === 'harian' ? 0 : 3,
+          pointRadius: pakaiBar ? 0 : 3,
           pointBackgroundColor: '#2563eb',
-          borderRadius: tipe === 'harian' ? 6 : 0,
+          borderRadius: pakaiBar ? 6 : 0,
         }],
       },
       options: {
@@ -285,7 +370,8 @@
     $wrap.innerHTML = list.map(function (g) {
       var initial = (g.nama || '?').trim().charAt(0).toUpperCase();
       var detailRows = g.detail.map(function (d) {
-        return '<div class="gb-detail-row"><span>' + esc(d.nama_kelas) + ' · ' + esc(d.nama_mapel) + '</span><span class="gb-detail-jam">' + esc(d.jam_label) + (d.hari ? ' · ' + esc(d.hari.charAt(0) + d.hari.substring(1, 3).toLowerCase() + ' ' + d.tanggal.substring(8, 10) + '/' + d.tanggal.substring(5, 7)) : '') + '</span></div>';
+        var labelTgl = d.hari ? (d.hari.charAt(0) + d.hari.substring(1, 3).toLowerCase() + ' ' + d.tanggal.substring(8, 10) + '/' + d.tanggal.substring(5, 7)) : '';
+        return '<div class="gb-detail-row"><span>' + esc(d.nama_kelas) + ' · ' + esc(d.nama_mapel) + '</span><span class="gb-detail-jam">' + esc(d.jam_label) + (labelTgl ? ' · ' + esc(labelTgl) : '') + '</span></div>';
       }).join('');
       var lebih = g.jumlah_sesi_belum > g.detail.length ? '<div class="gb-detail-more">+' + (g.jumlah_sesi_belum - g.detail.length) + ' sesi lainnya</div>' : '';
 
@@ -305,6 +391,6 @@
   }
 
   // ── Mulai ──
-  showModeFromCacheOrFetch(activeMode, false);
+  loadActiveTab(false);
 
 })();

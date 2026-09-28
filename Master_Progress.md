@@ -1566,6 +1566,66 @@ file terpisah dari app.js/app.html.
 - 3 fitur dari sesi sebelumnya (export bulanan guru/kelas, prompt AI)
   masih menunggu giliran setelah ini
 
+### Update 2026-09-26 (lanjutan, sama hari) — Fix bug + ganti "Minggu Lalu" jadi date-picker
+
+User deploy & test, muncul error: `Terjadi kesalahan server: _indexSiswaByNis is not defined`
+(fungsi itu ADA di `Jurnal.gs`, global scope sama, tapi entah kenapa tidak
+kebaca di produksi user — root cause pasti tidak dikonfirmasi, kandidat
+kuat: clasp push tidak menyertakan versi terbaru `Jurnal.gs`). Daripada
+debug lebih jauh, `Dashboard.gs` ditulis ulang **100% mandiri** — helper
+NIS/kehadiran (`_dashNisKey`, `_dashIndexSiswaByNis`,
+`_dashNormalisasiStatus`, `_dashRekapKehadiranSatuJurnal`) jadi salinan
+sendiri dengan prefix `_dash`, tidak memanggil apapun dari `Jurnal.gs`.
+**Catatan untuk sesi mendatang:** kalau logika kehadiran di `Jurnal.gs`
+diperbaiki lagi, salinan di `Dashboard.gs` HARUS disamakan manual (tidak
+otomatis sinkron).
+
+Sekaligus user minta ubah tab "Minggu Lalu" (rentang tetap H-7..H-1) jadi
+**date-picker bebas pilih, persis pola Export Jurnal Mingguan** (pilih 1
+tanggal → snap ke Senin-Sabtu minggu itu via `mondayOfWeek()`/`addDaysStr()`
+yang disalin dari app.js), dibatasi maksimal **90 hari (12 minggu) ke
+belakang** dari hari ini. Endpoint `getDashboardStats` sekarang menerima
+`tanggal_mulai`/`tanggal_selesai` langsung (bukan `mode`) — "Hari Ini" dan
+"Kemarin" di frontend cuma kasus khusus rentang 1 hari dari endpoint yang
+sama. Validasi batas 90 hari ditegakkan di backend (`_validasiRentangDashboard`,
+`DASHBOARD_MAX_HARI_MUNDUR = 90`) DAN dicerminkan di frontend (atribut
+`min`/`max` pada `<input type="date">` + pesan error ramah kalau tetap
+kelewat). Tren grafik otomatis ganti bentuk: 1 hari → per jam (bar), rentang
+>1 hari → per tanggal (line, lebih enak dibaca untuk banyak titik). Cache
+TTL untuk tab minggu jadi dinamis: 2 jam kalau rentang masih mencakup hari
+ini (minggu berjalan), 1 minggu kalau sudah lewat total.
+
+**Status: sudah dikerjakan di chat ini, BELUM di-deploy/dites user lagi.**
+
+**Cleanup Code.gs (2026-09-26):** route mati `getJurnalKelas` (dulu mengarah ke `actionGetJadwalKelas`, tidak pernah dipanggil frontend, tidak ada di TestSuite/dokumen) dihapus atas persetujuan user. `getJadwalKelas` tetap utuh.
+
+### Sesi 2026-09-28 — Export Jurnal KELAS Bulanan (selesai dikodekan, belum dites user)
+
+Bug lama yang disebut user di awal sesi sudah hilang sendiri (tidak perlu ditindaklanjuti).
+Urutan kerja dari user: (1) Export Jurnal Kelas Bulanan, (2) Export Jurnal Guru Bulanan, (3) perbaikan prompt AI.
+
+**Keputusan user:** dikelompokkan per MAPEL; tiap pertemuan = tanggal+jam, guru, materi, catatan, kehadiran+nama tidak hadir; tampilan = kartu materi per pertemuan + 1 tabel kehadiran per mapel di bawahnya; periode dipilih per BULAN (tgl 1 s.d. akhir bulan otomatis).
+
+**Dibangun (HANYA frontend, `js/app.js`):**
+- TIDAK ada endpoint backend baru walau user sudah mengizinkan: `getRekapJurnalKelas` sudah menerima rentang maks 31 hari (`REKAP_MAX_HARI`), 1 bulan penuh = selisih maks 30 hari, jadi muat. Pengelompokan per mapel dikerjakan di frontend. Konsekuensi: deploy cukup push frontend ke GitHub Pages, TIDAK perlu clasp/update deployment.
+- `exportBulananCardHtml()` + `bindExportBulananCard()` (kartu `<input type="month">`, max bulan berjalan), `bulanKeRentang()`, `buildRekapPdfKelasBulanan(data, bulanLabel)`, helper `_pdfKelompokkanPerMapel`, `_pdfHeaderMapel`, `_pdfUkurKartuPertemuan`, `_pdfGambarKartuPertemuan`, `_tglSingkat`, `_hurufStatus`. Mesin gambar rekap mingguan dipakai ulang (`_pdfChip`, `_pdfBlokLabel`, `_pdfHeaderDokumen`, `_pdfKpiStrip`, `_rekapPdfBeriNomorHalaman`). Tabel kehadiran digambar manual (bukan autoTable) supaya pemenggalan halaman konsisten; header tabel diulang saat pindah halaman.
+- Terpasang di 2 tempat: tab Export Jurnal Kelas (wali kelas) dan Admin -> Jurnal (tab Export, ada pilihan kelas).
+- Diuji di Node dengan data tiruan (40 pertemuan, 4 mapel, 8 halaman, plus bulan kosong): PDF terbentuk, tata letak dicek visual.
+
+**Belum:** Export Jurnal Guru Bulanan; perbaikan prompt AI; uji nyata user di produksi.
+
+### Sesi 2026-09-28 (lanjutan) — Export Jurnal GURU Bulanan (selesai dikodekan, belum dites user)
+
+**Keputusan user:** bagian = kombinasi Mapel + Kelas, urut per MAPEL dulu (A-Z) lalu kelas (urutan natural 7A, 7B, 8A, 10A); isi tiap bagian SAMA PERSIS dengan versi kelas (kartu materi + 1 tabel kehadiran per bagian).
+
+**Dibangun (frontend saja, `js/app.js`; tidak ada perubahan backend, `getRekapJurnalGuru` sudah menerima 31 hari):**
+- Mesin rekap bulanan di-REFAKTOR jadi generik: `_bangunRekapBulananPdf(opts)` (grup, judul, pihak, chip3Getter, namaFile). `buildRekapPdfKelasBulanan` sekarang tipis, memanggil mesin itu (hasil PDF kelas diuji ulang, tetap sama).
+- Baru: `buildRekapPdfGuruBulanan(data, bulanLabel)` + `_pdfKelompokkanPerMapelKelas()`. Kartu pertemuan guru tanpa chip ke-3 (kelas sudah ada di judul bagian). Warna bagian per mapel (mapel sama = warna sama lintas kelas).
+- Terpasang di: tab Export Jurnal Saya (guru, `exportGuruBln`) dan Admin -> Jurnal -> Export (panel bulanan sekarang punya pilihan Jenis Jurnal Kelas/Guru + target).
+- Diuji Node dengan data tiruan (5 kombinasi mapel+kelas, 5 halaman) + kasus tanpa data.
+
+**Belum:** perbaikan prompt AI; uji nyata user (deploy = push frontend saja).
+
 ---
 
 ## Keputusan Teknis Penting

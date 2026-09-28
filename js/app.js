@@ -1306,6 +1306,348 @@ function buildRekapPdfKelas(data) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// [BARU 2026-09-28] Export Rekap Jurnal KELAS BULANAN → PDF
+//
+// Dikelompokkan per MATA PELAJARAN (bukan per hari seperti rekap mingguan).
+// Di tiap mapel: kartu per pertemuan (tanggal+jam, guru, materi, catatan),
+// lalu SATU tabel rekap kehadiran untuk mapel itu di bawah kartu-kartunya.
+//
+// TIDAK ada endpoint backend baru: getRekapJurnalKelas (Jurnal.gs) sudah
+// menerima rentang sampai 31 hari, jadi 1 bulan penuh (tgl 1 s.d. akhir
+// bulan, maks 30 selisih hari) sudah muat. Pengelompokan per mapel dikerjakan
+// di sini, di frontend. Mesin gambar dipakai ulang dari rekap mingguan
+// (_pdfChip, _pdfBlokLabel, _pdfHeaderDokumen, _pdfKpiStrip,
+// _rekapPdfBeriNomorHalaman).
+// ══════════════════════════════════════════════════════════════
+
+var NAMA_BULAN_PANJANG = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+var NAMA_BULAN_PENDEK = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+
+function bulanKeRentang(ym) { // 'yyyy-MM' → { mulai, selesai, label }
+  var p = String(ym || '').split('-');
+  var y = parseInt(p[0], 10), m = parseInt(p[1], 10);
+  if (!y || !m || m < 1 || m > 12) return null;
+  var lastDay = new Date(y, m, 0).getDate();
+  return {
+    mulai: y + '-' + String(m).padStart(2, '0') + '-01',
+    selesai: y + '-' + String(m).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0'),
+    label: NAMA_BULAN_PANJANG[m - 1] + ' ' + y,
+  };
+}
+
+function bulanIniStr() { return todayStr().substring(0, 7); }
+
+function exportBulananCardHtml(idPrefix, judul) {
+  var r = bulanKeRentang(bulanIniStr());
+  return '<div class="filter-card" id="' + idPrefix + '_card">'
+    + '<div class="form-group"><span class="form-label"><i class="fa-solid fa-file-pdf"></i> ' + esc(judul || 'Export Rekap Jurnal Bulanan (per Mapel)') + '</span>'
+    + '<input type="month" class="select-input" id="' + idPrefix + '_bln" value="' + bulanIniStr() + '" max="' + bulanIniStr() + '"></div>'
+    + '<div class="admin-list-sub" id="' + idPrefix + '_periode" style="margin:8px 0 12px">Periode: ' + fmtTanggalIndo(r.mulai) + ' – ' + fmtTanggalIndo(r.selesai) + '</div>'
+    + '<button class="btn-secondary" id="' + idPrefix + '_btn" type="button"><i class="fa-solid fa-file-pdf"></i> Export PDF Bulanan</button>'
+    + '</div>';
+}
+
+// aksi(rentang) HARUS return Promise. getExtra() opsional (mis. ambil kelas terpilih).
+function bindExportBulananCard(idPrefix, aksi) {
+  var $bln = document.getElementById(idPrefix + '_bln');
+  var $periode = document.getElementById(idPrefix + '_periode');
+  var $btn = document.getElementById(idPrefix + '_btn');
+  if (!$bln || !$btn) return;
+
+  function tampilkanPeriode() {
+    var r = bulanKeRentang($bln.value);
+    $periode.textContent = r ? ('Periode: ' + fmtTanggalIndo(r.mulai) + ' – ' + fmtTanggalIndo(r.selesai)) : 'Pilih bulan terlebih dahulu';
+  }
+  $bln.addEventListener('change', tampilkanPeriode);
+
+  $btn.addEventListener('click', function() {
+    if (typeof window.jspdf === 'undefined') {
+      showToast('Library PDF gagal dimuat. Periksa koneksi internet lalu coba lagi.', true);
+      return;
+    }
+    var r = bulanKeRentang($bln.value);
+    if (!r) { showToast('Pilih bulan terlebih dahulu', true); return; }
+    var originalHtml = $btn.innerHTML;
+    $btn.disabled = true;
+    $btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Menyiapkan PDF...';
+    Promise.resolve()
+      .then(function() { return aksi(r); })
+      .catch(function(e) { showToast('Gagal: ' + (e && e.message ? e.message : e), true); })
+      .then(function() { $btn.disabled = false; $btn.innerHTML = originalHtml; });
+  });
+}
+
+function _tglSingkat(tanggal, hari) {
+  var h = String(hari || '');
+  var hSingkat = h ? (h.charAt(0) + h.substring(1, 3).toLowerCase()) : '';
+  var d = new Date(tanggal + 'T00:00:00');
+  return (hSingkat ? hSingkat + ' ' : '') + d.getDate() + ' ' + NAMA_BULAN_PENDEK[d.getMonth()];
+}
+
+// Kelompokkan item per mapel (urut nama mapel A-Z); di dalamnya tetap urut
+// tanggal+jam seperti dari backend.
+function _pdfKelompokkanPerMapel(items) {
+  var map = {}, list = [];
+  items.forEach(function(it) {
+    var k = it.mapel_id || it.nama_mapel;
+    if (!map[k]) { map[k] = { mapel_id: k, nama_mapel: it.nama_mapel || k, items: [] }; list.push(map[k]); }
+    map[k].items.push(it);
+  });
+  list.sort(function(a, b) { return String(a.nama_mapel).localeCompare(String(b.nama_mapel)); });
+  return list;
+}
+
+function _pdfHeaderMapel(doc, x, y, width, namaMapel, jumlah, warna) {
+  var h = 22;
+  doc.setFillColor(PDF_WARNA.navySoft[0], PDF_WARNA.navySoft[1], PDF_WARNA.navySoft[2]);
+  doc.rect(x, y, width, h, 'F');
+  doc.setFillColor(warna.fg[0], warna.fg[1], warna.fg[2]);
+  doc.rect(x, y, 5, h, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(undefined, 'bold'); doc.setFontSize(10.5);
+  doc.text(String(namaMapel || '-').toUpperCase(), x + 14, y + 14.5);
+  doc.setFont(undefined, 'normal'); doc.setFontSize(8);
+  var kanan = jumlah + ' pertemuan';
+  doc.text(kanan, x + width - 8 - doc.getTextWidth(kanan), y + 14.5);
+  doc.setTextColor(0, 0, 0);
+  return y + h + 6;
+}
+
+// Ukur kartu 1 pertemuan (penuh lebar; isi: chip tanggal/jam/guru, materi, catatan)
+function _pdfUkurKartuPertemuan(doc, item, lebarTeks) {
+  var lineH = 10.3;
+  doc.setFont(undefined, 'normal'); doc.setFontSize(8.3);
+  var materiLines = doc.splitTextToSize(item.ringkasan || '-', lebarTeks);
+  var catatanLines = item.catatan ? doc.splitTextToSize(item.catatan, lebarTeks) : [];
+  var tinggiIsi = 9.5 + materiLines.length * lineH + 5;
+  if (catatanLines.length) tinggiIsi += 9.5 + catatanLines.length * lineH + 5;
+  var height = 8 * 2 + 12 + 6 + tinggiIsi;
+  return { height: height, lineH: lineH, materiLines: materiLines, catatanLines: catatanLines };
+}
+
+function _pdfGambarKartuPertemuan(doc, x, y, width, item, uk, chip3Label) {
+  var pad = 8;
+  doc.setFillColor(253, 253, 254);
+  doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+  doc.roundedRect(x, y, width, uk.height, 4, 4, 'FD');
+  var cx = x + pad, cy = y + pad;
+  var w1 = _pdfChip(doc, cx, cy, _tglSingkat(item.tanggal, item.hari), PDF_WARNA.navy, [255, 255, 255]);
+  var w2 = _pdfChip(doc, cx + w1 + 5, cy, item.jam_label || '-', PDF_WARNA.biruBg, PDF_WARNA.biru);
+  if (chip3Label) _pdfChip(doc, cx + w1 + 5 + w2 + 5, cy, chip3Label, PDF_WARNA.abuBg, PDF_WARNA.abuTeks);
+  var yIsi = cy + 12 + 6;
+  var yNext = _pdfBlokLabel(doc, cx, yIsi, 'MATERI / KEGIATAN', uk.materiLines, uk.lineH);
+  if (uk.catatanLines.length) _pdfBlokLabel(doc, cx, yNext, 'CATATAN', uk.catatanLines, uk.lineH);
+}
+
+function _hurufStatus(status) {
+  var s = String(status || '').trim().toLowerCase();
+  if (s.indexOf('sakit') === 0) return 'S';
+  if (s.indexOf('izin') === 0) return 'I';
+  if (s.indexOf('alp') === 0) return 'A';
+  return s ? s.charAt(0).toUpperCase() : '?';
+}
+
+// Mesin bersama rekap BULANAN (kelas & guru). opts: { data, bulanLabel, judul,
+// pihakLabel, pihakNama, grup:[{key, warnaKey, judulBagian, items}],
+// labelJumlahBagian, chip3Getter (opsional), namaFile }
+function _bangunRekapBulananPdf(opts) {
+  var data = opts.data, bulanLabel = opts.bulanLabel, grup = opts.grup;
+  var doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  var namaSekolah = (appConfig && appConfig.nama_sekolah) ? appConfig.nama_sekolah : 'SMP Muhammadiyah 2 Cilacap';
+  var pageW = doc.internal.pageSize.getWidth();
+  var pageH = doc.internal.pageSize.getHeight();
+  var marginX = 26, marginTop = 24, marginBottom = 30;
+  var contentW = pageW - marginX * 2;
+  var lebarTeks = contentW - 16;
+  var judul = opts.judul;
+
+  var items = data.items || [];
+
+  var totalJp = 0, sumHadir = 0, sumTotal = 0;
+  items.forEach(function(it) {
+    totalJp += (it.jam_ids ? it.jam_ids.length : 0);
+    sumHadir += it.kehadiran.hadir;
+    sumTotal += it.kehadiran.total;
+  });
+  var kpis = [
+    { label: 'Total Pertemuan', value: items.length },
+    { label: opts.labelJumlahBagian, value: grup.length },
+    { label: 'Total JP', value: totalJp },
+    { label: 'Rata-rata Hadir', value: sumTotal > 0 ? Math.round((sumHadir / sumTotal) * 100) + '%' : '-' },
+  ];
+
+  var y = marginTop;
+  y = _pdfHeaderDokumen(doc, marginX, y, contentW, namaSekolah, judul,
+    opts.pihakLabel + ': ' + opts.pihakNama + '    ·    Bulan: ' + bulanLabel);
+  y = _pdfKpiStrip(doc, marginX, y, contentW, kpis);
+
+  function halamanBaru() {
+    doc.addPage();
+    y = marginTop;
+    doc.setFont(undefined, 'bold'); doc.setFontSize(8.5);
+    doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+    doc.text(namaSekolah + ' — ' + judul + ' ' + opts.pihakNama + ' (lanjutan)', marginX, y + 6);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont(undefined, 'normal');
+    y += 16;
+  }
+  function pastikanRuang(tinggi) {
+    if (y + tinggi > pageH - marginBottom) { halamanBaru(); return true; }
+    return false;
+  }
+
+  if (grup.length === 0) {
+    pastikanRuang(36);
+    doc.setFillColor(PDF_WARNA.abuBg[0], PDF_WARNA.abuBg[1], PDF_WARNA.abuBg[2]);
+    doc.roundedRect(marginX, y, contentW, 36, 5, 5, 'F');
+    doc.setFont(undefined, 'normal'); doc.setFontSize(9);
+    doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+    doc.text('Tidak ada jurnal yang tercatat pada bulan ini.', marginX + 12, y + 21);
+    doc.setTextColor(0, 0, 0);
+    y += 36;
+  } else {
+    var warnaMap = {};
+    grup.forEach(function(g) { _pdfWarnaMapel(warnaMap, g.warnaKey); });
+
+    // Kolom tabel kehadiran
+    var kolTgl = 62, kolAngka = 24;
+    var kolNama = contentW - kolTgl - kolAngka * 4;
+    var headerH = 16, lineHT = 8.6;
+
+    function gambarHeaderTabel() {
+      doc.setFillColor(PDF_WARNA.navySoft[0], PDF_WARNA.navySoft[1], PDF_WARNA.navySoft[2]);
+      doc.rect(marginX, y, contentW, headerH, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFont(undefined, 'bold'); doc.setFontSize(7.5);
+      var cx = marginX;
+      doc.text('TANGGAL', cx + 5, y + 11); cx += kolTgl;
+      ['H', 'S', 'I', 'A'].forEach(function(h) {
+        doc.text(h, cx + kolAngka / 2, y + 11, { align: 'center' }); cx += kolAngka;
+      });
+      doc.text('TIDAK HADIR', cx + 5, y + 11);
+      doc.setTextColor(0, 0, 0);
+      y += headerH;
+    }
+
+    grup.forEach(function(g) {
+      var warna = _pdfWarnaMapel(warnaMap, g.warnaKey);
+
+      // Header mapel + minimal 1 kartu pertama harus muat bersama
+      var ukPertama = _pdfUkurKartuPertemuan(doc, g.items[0], lebarTeks);
+      pastikanRuang(22 + 6 + ukPertama.height + 6);
+      y = _pdfHeaderMapel(doc, marginX, y, contentW, g.judulBagian, g.items.length, warna);
+
+      // 1) Kartu materi per pertemuan
+      g.items.forEach(function(it) {
+        var uk = _pdfUkurKartuPertemuan(doc, it, lebarTeks);
+        if (pastikanRuang(uk.height + 6)) {
+          // lanjutan mapel di halaman baru: penanda kecil supaya jelas konteksnya
+          doc.setFont(undefined, 'bold'); doc.setFontSize(8);
+          doc.setTextColor(warna.fg[0], warna.fg[1], warna.fg[2]);
+          doc.text(String(g.judulBagian).toUpperCase() + ' (lanjutan)', marginX, y + 6);
+          doc.setTextColor(0, 0, 0); doc.setFont(undefined, 'normal');
+          y += 14;
+        }
+        _pdfGambarKartuPertemuan(doc, marginX, y, contentW, it, uk, opts.chip3Getter ? opts.chip3Getter(it) : '');
+        y += uk.height + 6;
+      });
+
+      // 2) Tabel rekap kehadiran mapel ini
+      y += 2;
+      pastikanRuang(12 + headerH + 22);
+      doc.setFont(undefined, 'bold'); doc.setFontSize(6.8);
+      doc.setTextColor(PDF_WARNA.abuMuted[0], PDF_WARNA.abuMuted[1], PDF_WARNA.abuMuted[2]);
+      doc.text('REKAP KEHADIRAN — ' + String(g.judulBagian).toUpperCase(), marginX, y + 6.5);
+      doc.setTextColor(0, 0, 0);
+      y += 11;
+      gambarHeaderTabel();
+
+      g.items.forEach(function(it, idx) {
+        var th = (it.tidak_hadir_detail || []).map(function(t) { return t.nama + ' (' + _hurufStatus(t.status) + ')'; }).join(', ');
+        doc.setFont(undefined, 'normal'); doc.setFontSize(7);
+        var lines = doc.splitTextToSize(th || '-', kolNama - 10);
+        var rowH = Math.max(15, lines.length * lineHT + 6);
+        if (pastikanRuang(rowH)) gambarHeaderTabel();
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(PDF_WARNA.abuBg[0], PDF_WARNA.abuBg[1], PDF_WARNA.abuBg[2]);
+          doc.rect(marginX, y, contentW, rowH, 'F');
+        }
+        doc.setDrawColor(PDF_WARNA.abuBorder[0], PDF_WARNA.abuBorder[1], PDF_WARNA.abuBorder[2]);
+        doc.line(marginX, y + rowH, marginX + contentW, y + rowH);
+
+        var cx = marginX;
+        doc.setTextColor(PDF_WARNA.abuTeks[0], PDF_WARNA.abuTeks[1], PDF_WARNA.abuTeks[2]);
+        doc.text(_tglSingkat(it.tanggal, it.hari), cx + 5, y + 10); cx += kolTgl;
+        var kh = it.kehadiran;
+        [kh.hadir, kh.sakit, kh.izin, kh.alpa].forEach(function(n, i) {
+          var warnaAngka = i === 0 ? PDF_WARNA.hijau : (i === 1 ? PDF_WARNA.amber : (i === 2 ? PDF_WARNA.indigo : PDF_WARNA.merah));
+          doc.setTextColor(warnaAngka[0], warnaAngka[1], warnaAngka[2]);
+          doc.setFont(undefined, n > 0 && i > 0 ? 'bold' : 'normal');
+          doc.text(String(n), cx + kolAngka / 2, y + 10, { align: 'center' });
+          cx += kolAngka;
+        });
+        doc.setFont(undefined, 'normal');
+        doc.setTextColor(PDF_WARNA.abuTeks[0], PDF_WARNA.abuTeks[1], PDF_WARNA.abuTeks[2]);
+        doc.text(lines, cx + 5, y + 10);
+        doc.setTextColor(0, 0, 0);
+        y += rowH;
+      });
+      y += 14; // jarak antar mapel
+    });
+  }
+
+  _rekapPdfBeriNomorHalaman(doc);
+  doc.save(opts.namaFile);
+}
+
+function buildRekapPdfKelasBulanan(data, bulanLabel) {
+  var grup = _pdfKelompokkanPerMapel(data.items || []).map(function(g) {
+    return { key: g.mapel_id, warnaKey: g.mapel_id, judulBagian: g.nama_mapel, items: g.items };
+  });
+  _bangunRekapBulananPdf({
+    data: data, bulanLabel: bulanLabel, grup: grup,
+    judul: 'Rekap Jurnal Kelas Bulanan',
+    pihakLabel: 'Kelas', pihakNama: data.nama_kelas,
+    labelJumlahBagian: 'Jumlah Mapel',
+    chip3Getter: function(it) { return it.nama_guru || '-'; },
+    namaFile: 'Rekap-Jurnal-Kelas-Bulanan-' + String(data.nama_kelas).replace(/[^A-Za-z0-9]+/g, '-') + '-' + data.tanggal_mulai.substring(0, 7) + '.pdf',
+  });
+}
+
+// Guru: bagian = kombinasi MAPEL + KELAS, diurut per mapel dulu (keputusan
+// user 2026-09-28), lalu kelas (urutan natural: 7A, 7B, 8A, ... 10A).
+function _pdfKelompokkanPerMapelKelas(items) {
+  var map = {}, list = [];
+  items.forEach(function(it) {
+    var k = (it.mapel_id || it.nama_mapel) + '|' + (it.kelas_id || it.nama_kelas);
+    if (!map[k]) {
+      map[k] = { key: k, warnaKey: it.mapel_id || it.nama_mapel, nama_mapel: it.nama_mapel || it.mapel_id, nama_kelas: it.nama_kelas || it.kelas_id, items: [] };
+      list.push(map[k]);
+    }
+    map[k].items.push(it);
+  });
+  list.sort(function(a, b) {
+    var c = String(a.nama_mapel).localeCompare(String(b.nama_mapel));
+    if (c !== 0) return c;
+    return String(a.nama_kelas).localeCompare(String(b.nama_kelas), undefined, { numeric: true });
+  });
+  list.forEach(function(g) { g.judulBagian = g.nama_mapel + ' · ' + g.nama_kelas; });
+  return list;
+}
+
+function buildRekapPdfGuruBulanan(data, bulanLabel) {
+  _bangunRekapBulananPdf({
+    data: data, bulanLabel: bulanLabel, grup: _pdfKelompokkanPerMapelKelas(data.items || []),
+    judul: 'Rekap Jurnal Guru Bulanan',
+    pihakLabel: 'Guru', pihakNama: data.nama_guru,
+    labelJumlahBagian: 'Mapel · Kelas',
+    chip3Getter: null,
+    namaFile: 'Rekap-Jurnal-Guru-Bulanan-' + String(data.nama_guru).replace(/[^A-Za-z0-9]+/g, '-') + '-' + data.tanggal_mulai.substring(0, 7) + '.pdf',
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 // VIEW: Dashboard Guru (Jadwal Hari Ini / Tanggal Pilihan)
 // ══════════════════════════════════════════════════════════════
 
@@ -1842,8 +2184,18 @@ var JURNAL_SAYA_TABS = [
 function viewJurnalSayaExport() {
   var html = subtabBarHtml(JURNAL_SAYA_TABS, 'export');
   html += exportPdfCardHtml('exportGuru', todayStr());
+  html += exportBulananCardHtml('exportGuruBln', 'Export Rekap Jurnal Bulanan (per Mapel & Kelas)');
   $main.innerHTML = html;
   bindSubtabBar('jurnal-saya', {}, 'export');
+
+  bindExportBulananCard('exportGuruBln', function(r) {
+    return API.call('getRekapJurnalGuru', { tanggal_mulai: r.mulai, tanggal_selesai: r.selesai }, 'GET')
+      .then(function(res) {
+        if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+        buildRekapPdfGuruBulanan(res.data, r.label);
+        showToast('PDF rekap bulanan berhasil dibuat ✓');
+      });
+  });
 
   bindExportPdfCard('exportGuru', {
     pdf: function(mulai, selesai) {
@@ -1958,8 +2310,18 @@ function viewJurnalKelas(params) {
 function viewJurnalKelasExport(kelasId) {
   var html = subtabBarHtml(JURNAL_KELAS_TABS, 'export');
   html += exportPdfCardHtml('exportKelas', jurnalKelasTanggal);
+  html += exportBulananCardHtml('exportKelasBln', 'Export Rekap Jurnal Bulanan (per Mapel)');
   $main.innerHTML = html;
   bindSubtabBar('jurnal-kelas', {}, 'export');
+
+  bindExportBulananCard('exportKelasBln', function(r) {
+    return API.call('getRekapJurnalKelas', { kelas_id: kelasId, tanggal_mulai: r.mulai, tanggal_selesai: r.selesai }, 'GET')
+      .then(function(res) {
+        if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+        buildRekapPdfKelasBulanan(res.data, r.label);
+        showToast('PDF rekap bulanan berhasil dibuat ✓');
+      });
+  });
 
   bindExportPdfCard('exportKelas', {
     pdf: function(mulai, selesai) {
@@ -2283,9 +2645,43 @@ function renderAdminJurnalExportTab() {
   html += '<div id="exportAdmin_promptBox" style="display:none;margin-top:12px"></div>';
   html += '</div>';
 
+  html += '<div class="sec-title" style="margin-top:18px">Export Rekap Jurnal Bulanan</div>';
+  html += '<div class="filter-card"><div class="form-grid-2">'
+    + '<div class="form-group"><span class="form-label">Jenis Jurnal</span><select class="select-input" id="exportAdminBln_jenis">'
+    + '<option value="kelas">Jurnal Kelas</option><option value="guru">Jurnal Guru</option></select></div>'
+    + '<div class="form-group"><span class="form-label" id="exportAdminBln_targetLabel">Kelas</span><select class="select-input" id="exportAdminBln_target"></select></div>'
+    + '</div></div>';
+  html += exportBulananCardHtml('exportAdminBln', 'Bulan');
+
   $main.innerHTML = html;
   bindSubtabBar('admin-jurnal', {}, 'export');
   bindExportAdminCard();
+
+  var $blnJenis = document.getElementById('exportAdminBln_jenis');
+  var $blnTarget = document.getElementById('exportAdminBln_target');
+  function isiTargetBulanan() {
+    var isKelas = ($blnJenis.value === 'kelas');
+    var list = isKelas ? STATE.kelasList : STATE.guruList;
+    document.getElementById('exportAdminBln_targetLabel').textContent = isKelas ? 'Kelas' : 'Guru';
+    $blnTarget.innerHTML = (list || []).map(function(item) {
+      return '<option value="' + (item.kelas_id || item.guru_id) + '">' + esc(item.nama_kelas || item.nama) + '</option>';
+    }).join('');
+  }
+  isiTargetBulanan();
+  $blnJenis.addEventListener('change', isiTargetBulanan);
+
+  bindExportBulananCard('exportAdminBln', function(r) {
+    if (!$blnTarget.value) return Promise.reject(new Error('Data guru/kelas belum tersedia'));
+    var isKelas = ($blnJenis.value === 'kelas');
+    var req = isKelas
+      ? API.call('getRekapJurnalKelas', { kelas_id: $blnTarget.value, tanggal_mulai: r.mulai, tanggal_selesai: r.selesai }, 'GET')
+      : API.call('getRekapJurnalGuru', { guru_id: $blnTarget.value, tanggal_mulai: r.mulai, tanggal_selesai: r.selesai }, 'GET');
+    return req.then(function(res) {
+      if (!res.ok) throw new Error(res.error || 'Gagal mengambil data rekap');
+      if (isKelas) buildRekapPdfKelasBulanan(res.data, r.label); else buildRekapPdfGuruBulanan(res.data, r.label);
+      showToast('PDF rekap bulanan berhasil dibuat ✓');
+    });
+  });
 }
 
 // Tab 1: "Jurnal Guru" — filter + daftar jurnal harian (perilaku sama seperti sebelumnya).
